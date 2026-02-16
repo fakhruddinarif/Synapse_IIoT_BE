@@ -5,13 +5,25 @@ using System.Text;
 using System.Threading.RateLimiting;
 using Infrastructure.Data;
 using Microsoft.AspNetCore.RateLimiting;
+using Core.Interface;
+using Infrastructure.Repositories;
+using Infrastructure.Services;
+using Api.Middlewares;
+using System.Text.Json.Serialization;
 
 var builder = WebApplication.CreateBuilder(args);
 
 // Config Database and Dependency Injection
-var connectionString = builder.Configuration.GetConnectionString("DefaultConnection");
+var connectionString = builder.Configuration.GetConnectionString("DefaultConnection") ?? throw new InvalidOperationException("Connection string 'DefaultConnection' is not configured");
 builder.Services.AddDbContext<AppDbContext>(options =>
-	options.UseMySql(connectionString, ServerVersion.AutoDetect(connectionString)));
+	options.UseMySQL(connectionString));
+
+// Register Repositories
+builder.Services.AddScoped<IUserRepository, UserRepository>();
+
+// Register Services
+builder.Services.AddScoped<ITokenService, TokenService>();
+builder.Services.AddScoped<IAuthService, AuthService>();
 
 // Config Rate Limiting
 builder.Services.AddRateLimiter(options =>
@@ -59,16 +71,44 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
 		{
 			OnMessageReceived = context =>
 			{
-				// Get token from cookie bernama "JWT_TOKEN"
-				context.Token = context.Request.Cookies["JWT_TOKEN"];
+				// Get token from cookie bernama "JWT-TOKEN"
+				context.Token = context.Request.Cookies["JWT-TOKEN"];
 				return Task.CompletedTask;
+			},
+			OnChallenge = context =>
+			{
+				// Skip default behavior
+				context.HandleResponse();
+
+				// Set status code and content type
+				context.Response.StatusCode = 401;
+				context.Response.ContentType = "application/json";
+
+				// Create custom response format
+				var response = new
+				{
+					status = 401,
+					success = false,
+					message = string.IsNullOrEmpty(context.ErrorDescription) 
+						? "Unauthorized. Please login first." 
+						: context.ErrorDescription,
+					data = (object?)null,
+					error = (object?)null
+				};
+
+				return context.Response.WriteAsJsonAsync(response);
 			}
 		};
 	});
 
 // Add services to the container.
 
-builder.Services.AddControllers();
+builder.Services.AddControllers()
+	.AddJsonOptions(options =>
+	{
+		// Serialize enums as strings instead of integers
+		options.JsonSerializerOptions.Converters.Add(new JsonStringEnumConverter());
+	});
 // Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
 builder.Services.AddOpenApi();
 
@@ -82,7 +122,7 @@ builder.Services.AddCors(options =>
 			  .AllowAnyMethod()
 			  .AllowCredentials(); // Wajib TRUE agar Cookie bisa lewat
 	});
-}); ;
+});
 
 var app = builder.Build();
 
@@ -97,6 +137,9 @@ app.UseCors("App");
 app.UseHttpsRedirection();
 
 app.UseRateLimiter();
+
+// Add CSRF Validation Middleware (must be before Authentication)
+app.UseCsrfValidation();
 
 app.UseAuthentication();
 app.UseAuthorization();

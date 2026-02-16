@@ -1,0 +1,160 @@
+### Base URL
+@baseUrl = https://localhost:5001/api
+
+###
+### Standard API Response Format:
+### {
+###   "status": int,           // HTTP status code
+###   "message": string,        // Success or error message
+###   "data": {} / [],          // Response data (object or array)
+###   "paging": {               // Optional: for paginated responses
+###     "size": int,
+###     "page": int,
+###     "total_page": int,
+###     "total_item": int
+###   },
+###   "error": {} / []          // Optional: error details
+### }
+###
+
+### 1. Get CSRF Token (harus dipanggil dulu sebelum register/login)
+GET {{baseUrl}}/csrf-token
+
+### Response Example:
+### {
+###   "status": 200,
+###   "message": "CSRF token generated successfully",
+###   "data": null,
+###   "paging": null,
+###   "error": null
+### }
+
+
+### 2. Register User (Perlu CSRF Token dari cookie)
+POST {{baseUrl}}/auth/register
+Content-Type: application/json
+X-CSRF-TOKEN: <copy-from-cookie>
+
+{
+  "username": "admin",
+  "password": "admin123",
+  "role": 2
+}
+
+### Response Example (Success):
+### {
+###   "status": 201,
+###   "message": "User registered successfully",
+###   "data": {
+###     "id": "guid",
+###     "username": "admin",
+###     "role": 2,
+###     "createdAt": "2026-02-16T...",
+###     "updatedAt": null
+###   },
+###   "paging": null,
+###   "error": null
+### }
+
+
+### 3. Login User (JWT disimpan di cookie "JWT-TOKEN")
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{
+  "username": "admin",
+  "password": "admin123"
+}
+
+### Response Example (Success):
+### {
+###   "status": 200,
+###   "message": "Login successful",
+###   "data": {
+###     "id": "guid",
+###     "username": "admin",
+###     "role": 2,
+###     "createdAt": "2026-02-16T...",
+###     "updatedAt": null
+###   },
+###   "paging": null,
+###   "error": null
+### }
+
+
+### 4. Get User Info (otomatis membaca JWT dari cookie)
+GET {{baseUrl}}/auth/info
+
+### Response Example (Success):
+### {
+###   "status": 200,
+###   "message": "User info retrieved successfully",
+###   "data": {
+###     "id": "guid",
+###     "username": "admin",
+###     "role": 2,
+###     "createdAt": "2026-02-16T...",
+###     "updatedAt": null
+###   },
+###   "paging": null,
+###   "error": null
+### }
+
+
+### 5. Logout (menghapus JWT cookie)
+POST {{baseUrl}}/auth/logout
+
+### Response Example (Success):
+### {
+###   "status": 200,
+###   "message": "Logged out successfully",
+###   "data": null,
+###   "paging": null,
+###   "error": null
+### }
+
+
+###
+### Error Response Examples:
+###
+
+### Invalid Input:
+### {
+###   "status": 400,
+###   "message": "Invalid input",
+###   "data": null,
+###   "paging": null,
+###   "error": ["Username is required", "Password must be at least 6 characters"]
+### }
+
+### Unauthorized:
+### {
+###   "status": 401,
+###   "message": "Invalid username or password",
+###   "data": null,
+###   "paging": null,
+###   "error": null
+### }
+
+### CSRF Token Error:
+### {
+###   "status": 403,
+###   "message": "Invalid or missing CSRF token",
+###   "data": null,
+###   "paging": null,
+###   "error": null
+### }
+
+###
+### Untuk testing mutating requests dengan CSRF protection:
+### POST/PUT/PATCH/DELETE ke endpoint lain harus mengirim X-CSRF-TOKEN header
+###
+
+### Example: Protected POST request
+POST {{baseUrl}}/some-protected-endpoint
+Content-Type: application/json
+X-CSRF-TOKEN: <copy-from-cookie>
+
+{
+  "data": "example"
+}

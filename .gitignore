@@ -66,4 +66,4 @@ appsettings.json
 appsettings.Production.json
 
 # Docker
-docker-compose.override.yml
+docker-compose.yml

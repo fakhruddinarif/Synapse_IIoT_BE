@@ -12,7 +12,7 @@
     <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" Version="10.0.3" />
     <PackageReference Include="MQTTnet" Version="5.1.0.1559" />
     <PackageReference Include="OPCFoundation.NetStandard.Opc.Ua" Version="1.5.378.106" />
-    <PackageReference Include="Pomelo.EntityFrameworkCore.MySql" Version="9.0.0" />
+    <PackageReference Include="MySql.EntityFrameworkCore" Version="10.0.0" />
     <PackageReference Include="System.IdentityModel.Tokens.Jwt" Version="8.16.0" />
   </ItemGroup>
 
