@@ -32,7 +32,10 @@ builder.Services.AddScoped<IDeviceService, DeviceService>();
 builder.Services.AddHttpClient();
 
 // Register SignalR for real-time data streaming
-builder.Services.AddSignalR();
+builder.Services.AddSignalR(options =>
+{
+	options.EnableDetailedErrors = true;
+});
 
 // Register Background Worker Service for device polling (after SignalR)
 builder.Services.AddHostedService<DeviceWorkerService<DeviceDataHub>>();
@@ -152,11 +155,13 @@ builder.Services.AddCors(options =>
 			policy.WithOrigins(
 				"http://localhost:5173",      // Frontend
 				"http://localhost:5000",      // API (for Postman)
-				"https://localhost:5001"      // API HTTPS (for Postman)
+				"https://localhost:5001",     // API HTTPS (for Postman)
+				"http://localhost:5009"       // Backend URL
 			)
 			.AllowAnyHeader()
 			.AllowAnyMethod()
-			.AllowCredentials(); // Wajib TRUE agar Cookie bisa lewat
+			.AllowCredentials() // Wajib TRUE agar Cookie bisa lewat
+			.SetIsOriginAllowed(_ => true); // Allow any origin in development
 		}
 		else
 		{
