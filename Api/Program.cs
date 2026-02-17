@@ -10,6 +10,7 @@ using Infrastructure.Repositories;
 using Infrastructure.Services;
 using Api.Middlewares;
 using System.Text.Json.Serialization;
+using Api.Hubs;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -20,10 +21,21 @@ builder.Services.AddDbContext<AppDbContext>(options =>
 
 // Register Repositories
 builder.Services.AddScoped<IUserRepository, UserRepository>();
+builder.Services.AddScoped<IDeviceRepository, DeviceRepository>();
 
 // Register Services
 builder.Services.AddScoped<ITokenService, TokenService>();
 builder.Services.AddScoped<IAuthService, AuthService>();
+builder.Services.AddScoped<IDeviceService, DeviceService>();
+
+// Register HttpClient for HTTP device polling
+builder.Services.AddHttpClient();
+
+// Register SignalR for real-time data streaming
+builder.Services.AddSignalR();
+
+// Register Background Worker Service for device polling (after SignalR)
+builder.Services.AddHostedService<DeviceWorkerService<DeviceDataHub>>();
 
 // Config Rate Limiting
 builder.Services.AddRateLimiter(options =>
@@ -37,12 +49,29 @@ builder.Services.AddRateLimiter(options =>
 	});
 
 	options.RejectionStatusCode = StatusCodes.Status429TooManyRequests; // Too Many Requests
-});
+	
+	// Custom response when rate limit exceeded
+	options.OnRejected = async (context, token) =>
+	{
+		context.HttpContext.Response.StatusCode = StatusCodes.Status429TooManyRequests;
+		context.HttpContext.Response.ContentType = "application/json";
 
-// Config CSRF Protection
-builder.Services.AddAntiforgery(options => 
-{
-    options.HeaderName = "X-CSRF-TOKEN"; // Header yang wajib dikirim frontend untuk validasi CSRF
+		var response = new
+		{
+			status = 429,
+			success = false,
+			message = "Too many requests. Please try again later.",
+			data = (object?)null,
+			error = new
+			{
+				retryAfter = context.Lease.TryGetMetadata(MetadataName.RetryAfter, out var retryAfter) 
+					? retryAfter.TotalSeconds 
+					: (double?)null
+			}
+		};
+
+		await context.HttpContext.Response.WriteAsJsonAsync(response, cancellationToken: token);
+	};
 });
 
 // Config Authentication with JWT
@@ -117,16 +146,35 @@ builder.Services.AddCors(options =>
 {
 	options.AddPolicy("App", policy =>
 	{
-		policy.WithOrigins("http://localhost:5173")
-			  .AllowAnyHeader()
-			  .AllowAnyMethod()
-			  .AllowCredentials(); // Wajib TRUE agar Cookie bisa lewat
+		if (builder.Environment.IsDevelopment())
+		{
+			// Development: Allow specific origins for testing
+			policy.WithOrigins(
+				"http://localhost:5173",      // Frontend
+				"http://localhost:5000",      // API (for Postman)
+				"https://localhost:5001"      // API HTTPS (for Postman)
+			)
+			.AllowAnyHeader()
+			.AllowAnyMethod()
+			.AllowCredentials(); // Wajib TRUE agar Cookie bisa lewat
+		}
+		else
+		{
+			// Production: Strict origin
+			policy.WithOrigins("http://localhost:5173")
+				  .AllowAnyHeader()
+				  .AllowAnyMethod()
+				  .AllowCredentials();
+		}
 	});
 });
 
 var app = builder.Build();
 
 // Configure the HTTP request pipeline.
+// Exception handling must be first to catch all exceptions
+app.UseExceptionHandling();
+
 if (app.Environment.IsDevelopment())
 {
 	app.MapOpenApi();
@@ -134,16 +182,23 @@ if (app.Environment.IsDevelopment())
 
 app.UseCors("App");
 
-app.UseHttpsRedirection();
+// Only use HTTPS redirection in production
+if (!app.Environment.IsDevelopment())
+{
+	app.UseHttpsRedirection();
+}
 
 app.UseRateLimiter();
 
-// Add CSRF Validation Middleware (must be before Authentication)
-app.UseCsrfValidation();
+// Format responses for error status codes without body
+app.UseResponseFormatting();
 
 app.UseAuthentication();
 app.UseAuthorization();
 
 app.MapControllers();
+
+// Map SignalR Hub for real-time device data
+app.MapHub<DeviceDataHub>("/hubs/device-data");
 
 await app.RunAsync();

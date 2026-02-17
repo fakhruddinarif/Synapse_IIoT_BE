@@ -11,6 +11,7 @@ namespace Api.Middlewares
 		{
 			"/api/csrf-token",
 			"/api/auth/login",
+			"/api/auth/register",
 			"/api/auth/logout",
 			"/api/auth/info"
 		};

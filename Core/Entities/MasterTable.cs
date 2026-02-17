@@ -23,7 +23,8 @@ namespace Core.Entities
         public string TableName { get; set; } = string.Empty;
 
         public string? Description { get; set; } = null;
-        public bool IsEnabled { get; set; } = false;
+
+        public bool IsActive { get; set; } = false;
 
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow; // Timestamp for when the user was created
 		public DateTime? UpdatedAt { get; set; } = null; // Timestamp for when the user was last updated
@@ -31,6 +32,7 @@ namespace Core.Entities
 
         // Navigation property for related MasterTableFields
         public ICollection<MasterTableFields> Fields { get; set; } = new List<MasterTableFields>();
+        public ICollection<StorageFlow> StorageFlows { get; set; } = new List<StorageFlow>(); // Navigation property for related StorageFlows
 
     }
 }

@@ -31,10 +31,10 @@ namespace Infrastructure.Data
 				entity.HasKey(e => e.Id);
 				entity.Property(e => e.Username).IsRequired().HasMaxLength(100);
 				entity.Property(e => e.PasswordHash).IsRequired().HasMaxLength(255);
-			entity.Property(e => e.Role)
-				.HasConversion<string>()
-				.HasColumnType(VARCHAR_50)
-				.HasDefaultValue(UserRole.VIEWER);
+				entity.Property(e => e.Role)
+					.HasConversion<string>()
+					.HasColumnType(VARCHAR_50)
+					.HasDefaultValue(UserRole.VIEWER);
 			});
 
 			modelBuilder.Entity<Device>(entity =>
@@ -48,6 +48,7 @@ namespace Infrastructure.Data
 					.HasColumnType(VARCHAR_50)
 					.HasDefaultValue(Protocol.HTTP);
 				entity.Property(e => e.ConnectionConfigJson).HasColumnType("json").IsRequired();
+				entity.Property(e => e.PollingInterval).HasDefaultValue(1000);
 			});
 
 			modelBuilder.Entity<Tag>(entity =>
@@ -60,10 +61,10 @@ namespace Infrastructure.Data
 					.HasConversion<string>()
 					.HasColumnType(VARCHAR_50)
 					.HasDefaultValue(DataType.FLOAT);
-			entity.Property(e => e.AccessMode)
-				.HasConversion<string>()
-				.HasColumnType(VARCHAR_50)
-				.HasDefaultValue(AccessMode.READONLY);
+				entity.Property(e => e.AccessMode)
+					.HasConversion<string>()
+					.HasColumnType(VARCHAR_50)
+					.HasDefaultValue(AccessMode.READONLY);
 				entity.Property(e => e.IsScaled).HasDefaultValue(false);
 				entity.Property(e => e.Unit).HasMaxLength(20);
 				entity.Property(e => e.OpcUaNodeId).HasMaxLength(100);
@@ -83,19 +84,19 @@ namespace Infrastructure.Data
 
 			modelBuilder.Entity<MasterTableFields>(entity =>
 			{
-    			entity.HasKey(e => e.Id);
-    			entity.Property(e => e.MasterTableId).IsRequired();
-    			entity.Property(e => e.Name).IsRequired().HasMaxLength(100);
-    			entity.Property(e => e.DataType)
-        			.HasConversion<string>()
-        			.HasColumnType(VARCHAR_50)
-        			.HasDefaultValue(DataTypeTable.STRING);
+				entity.HasKey(e => e.Id);
+				entity.Property(e => e.MasterTableId).IsRequired();
+				entity.Property(e => e.Name).IsRequired().HasMaxLength(100);
+				entity.Property(e => e.DataType)
+					.HasConversion<string>()
+					.HasColumnType(VARCHAR_50)
+					.HasDefaultValue(DataTypeTable.STRING);
 
-    			entity.HasOne(e => e.MasterTable)
-        			.WithMany(m => m.Fields)
-        			.HasForeignKey(e => e.MasterTableId)
-        			.OnDelete(DeleteBehavior.Cascade);
-				});
+				entity.HasOne(e => e.MasterTable)
+					.WithMany(m => m.Fields)
+					.HasForeignKey(e => e.MasterTableId)
+					.OnDelete(DeleteBehavior.Cascade);
+			});
 		}
 	}
 }
