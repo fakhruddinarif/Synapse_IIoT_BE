@@ -1,4 +1,5 @@
 using Core.DTOs;
+using Core.Exceptions;
 using System.Net;
 using System.Text.Json;
 
@@ -31,11 +32,19 @@ namespace Api.Middlewares
 		private static async Task HandleExceptionAsync(HttpContext context, Exception exception)
 		{
 			context.Response.ContentType = "application/json";
-			context.Response.StatusCode = (int)HttpStatusCode.InternalServerError;
+
+			var (statusCode, message) = exception switch
+			{
+				NotFoundException => ((int)HttpStatusCode.NotFound, exception.Message),
+				BadRequestException => ((int)HttpStatusCode.BadRequest, exception.Message),
+				_ => ((int)HttpStatusCode.InternalServerError, "An error occurred while processing your request.")
+			};
+
+			context.Response.StatusCode = statusCode;
 
 			var response = ApiResponse<object>.Fail(
-				context.Response.StatusCode,
-				"An error occurred while processing your request.",
+				statusCode,
+				message,
 				new
 				{
 					type = exception.GetType().Name,

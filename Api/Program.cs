@@ -22,11 +22,14 @@ builder.Services.AddDbContext<AppDbContext>(options =>
 // Register Repositories
 builder.Services.AddScoped<IUserRepository, UserRepository>();
 builder.Services.AddScoped<IDeviceRepository, DeviceRepository>();
+builder.Services.AddScoped<IMasterTableRepository, MasterTableRepository>();
+builder.Services.AddScoped<IMasterTableFieldsRepository, MasterTableFieldsRepository>();
 
 // Register Services
 builder.Services.AddScoped<ITokenService, TokenService>();
 builder.Services.AddScoped<IAuthService, AuthService>();
 builder.Services.AddScoped<IDeviceService, DeviceService>();
+builder.Services.AddScoped<IMasterTableService, MasterTableService>();
 
 // Register HttpClient for HTTP device polling
 builder.Services.AddHttpClient();
