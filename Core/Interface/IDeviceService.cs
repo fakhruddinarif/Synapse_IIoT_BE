@@ -10,5 +10,6 @@ namespace Core.Interface
 		Task<ApiResponse<DeviceResponseDto>> CreateAsync(CreateDeviceDto dto);
 		Task<ApiResponse<DeviceResponseDto>> UpdateAsync(Guid id, UpdateDeviceDto dto);
 		Task<ApiResponse<object>> DeleteAsync(Guid id);
+		Task<ApiResponse<TestHttpConnectionResponseDto>> TestHttpConnectionAsync(TestHttpRequestDto request);
 	}
 }

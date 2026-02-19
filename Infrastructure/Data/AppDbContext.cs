@@ -20,6 +20,10 @@ namespace Infrastructure.Data
 		public DbSet<Tag> Tags { get; set; }
 		public DbSet<MasterTable> MasterTables { get; set; }
 		public DbSet<MasterTableFields> MasterTableFields { get; set; }
+		public DbSet<StorageFlow> StorageFlows { get; set; }
+		public DbSet<StorageFlowDevice> StorageFlowDevices { get; set; }
+		public DbSet<StorageFlowMapping> StorageFlowMappings { get; set; }
+		public DbSet<FileMetadata> FileMetadata { get; set; }
 
 		// Fluent API configurations
 		protected override void OnModelCreating(ModelBuilder modelBuilder)
@@ -96,6 +100,75 @@ namespace Infrastructure.Data
 					.WithMany(m => m.Fields)
 					.HasForeignKey(e => e.MasterTableId)
 					.OnDelete(DeleteBehavior.Cascade);
+			});
+
+			modelBuilder.Entity<StorageFlow>(entity =>
+			{
+				entity.HasKey(e => e.Id);
+				entity.Property(e => e.Name).IsRequired().HasMaxLength(100);
+				entity.Property(e => e.Description).HasMaxLength(255);
+				entity.Property(e => e.IsActive).HasDefaultValue(false);
+				entity.Property(e => e.StorageInterval).HasDefaultValue(1000);
+
+				entity.HasOne(e => e.MasterTable)
+					.WithMany(m => m.StorageFlows)
+					.HasForeignKey(e => e.MasterTableId)
+					.OnDelete(DeleteBehavior.Restrict);
+			});
+
+			modelBuilder.Entity<StorageFlowDevice>(entity =>
+			{
+				entity.HasKey(e => e.Id);
+
+				entity.HasOne(e => e.StorageFlow)
+					.WithMany(sf => sf.StorageFlowDevices)
+					.HasForeignKey(e => e.StorageFlowId)
+					.OnDelete(DeleteBehavior.Cascade);
+
+				entity.HasOne(e => e.Device)
+					.WithMany()
+					.HasForeignKey(e => e.DeviceId)
+					.OnDelete(DeleteBehavior.Restrict);
+
+				// Ensure unique combination of StorageFlowId and DeviceId
+				entity.HasIndex(e => new { e.StorageFlowId, e.DeviceId }).IsUnique();
+			});
+
+			modelBuilder.Entity<StorageFlowMapping>(entity =>
+			{
+				entity.HasKey(e => e.Id);
+				entity.Property(e => e.SourcePath).IsRequired().HasMaxLength(500);
+
+				entity.HasOne(e => e.StorageFlow)
+					.WithMany(sf => sf.StorageFlowMappings)
+					.HasForeignKey(e => e.StorageFlowId)
+					.OnDelete(DeleteBehavior.Cascade);
+
+				entity.HasOne(e => e.MasterTableField)
+					.WithMany()
+					.HasForeignKey(e => e.MasterTableFieldId)
+					.OnDelete(DeleteBehavior.Restrict);
+
+				entity.HasOne(e => e.Tag)
+					.WithMany()
+					.HasForeignKey(e => e.TagId)
+					.OnDelete(DeleteBehavior.SetNull);
+			});
+
+			modelBuilder.Entity<FileMetadata>(entity =>
+			{
+				entity.HasKey(e => e.Id);
+				entity.Property(e => e.FileName).IsRequired().HasMaxLength(255);
+				entity.Property(e => e.OriginalFileName).IsRequired().HasMaxLength(255);
+				entity.Property(e => e.FilePath).IsRequired().HasMaxLength(500);
+				entity.Property(e => e.ContentType).HasMaxLength(100);
+				entity.Property(e => e.EntityType).HasMaxLength(50);
+				entity.Property(e => e.FieldName).HasMaxLength(100);
+				entity.Property(e => e.UploadedAt).HasDefaultValueSql("CURRENT_TIMESTAMP(6)");
+				
+				// Index for faster queries
+				entity.HasIndex(e => new { e.EntityType, e.EntityId, e.FieldName });
+				entity.HasIndex(e => e.DeletedAt);
 			});
 		}
 	}

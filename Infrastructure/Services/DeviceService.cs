@@ -10,11 +10,13 @@ namespace Infrastructure.Services
 	public class DeviceService : IDeviceService
 	{
 		private readonly IDeviceRepository _deviceRepository;
+		private readonly IHttpClientFactory _httpClientFactory;
 		private static readonly JsonSerializerOptions _jsonOptions = new() { PropertyNameCaseInsensitive = true };
 
-		public DeviceService(IDeviceRepository deviceRepository)
+		public DeviceService(IDeviceRepository deviceRepository, IHttpClientFactory httpClientFactory)
 		{
 			_deviceRepository = deviceRepository;
+			_httpClientFactory = httpClientFactory;
 		}
 
 		public async Task<ApiResponse<DeviceResponseDto>> GetByIdAsync(Guid id)
@@ -182,6 +184,113 @@ namespace Infrastructure.Services
 			await _deviceRepository.DeleteAsync(id);
 
 			return ApiResponse<object>.Success(null, "Device deleted successfully");
+		}
+
+		public async Task<ApiResponse<TestHttpConnectionResponseDto>> TestHttpConnectionAsync(TestHttpRequestDto request)
+		{
+			try
+			{
+				// Validate URL
+				if (string.IsNullOrWhiteSpace(request.Url) || !Uri.TryCreate(request.Url, UriKind.Absolute, out _))
+				{
+					return ApiResponse<TestHttpConnectionResponseDto>.Fail(400, "Invalid URL provided");
+				}
+
+				var client = _httpClientFactory.CreateClient();
+				client.Timeout = TimeSpan.FromSeconds(30);
+
+				// Add headers if provided
+				if (request.Headers != null)
+				{
+					foreach (var header in request.Headers)
+					{
+						client.DefaultRequestHeaders.TryAddWithoutValidation(header.Key, header.Value);
+					}
+				}
+
+				// Make request based on method
+				HttpResponseMessage response;
+				var method = request.Method?.ToUpper() ?? "GET";
+
+				switch (method)
+				{
+					case "GET":
+						response = await client.GetAsync(request.Url);
+						break;
+					case "POST":
+						var content = new StringContent(
+							request.Body ?? string.Empty,
+							System.Text.Encoding.UTF8,
+							"application/json");
+						response = await client.PostAsync(request.Url, content);
+						break;
+					default:
+						return ApiResponse<TestHttpConnectionResponseDto>.Fail(400, "Unsupported HTTP method. Use GET or POST");
+				}
+
+				var responseContent = await response.Content.ReadAsStringAsync();
+
+				// Try to parse as JSON
+				object? parsedData = null;
+				try
+				{
+					parsedData = JsonSerializer.Deserialize<object>(responseContent, _jsonOptions);
+				}
+				catch
+				{
+					parsedData = responseContent; // Return as string if not JSON
+				}
+
+				var result = new TestHttpConnectionResponseDto
+				{
+					RequestUrl = request.Url,
+					RequestMethod = method,
+					ResponseStatusCode = (int)response.StatusCode,
+					ResponseData = parsedData,
+					ResponseHeaders = response.Headers.ToDictionary(h => h.Key, h => string.Join(", ", h.Value)),
+					IsSuccess = response.IsSuccessStatusCode,
+					ErrorMessage = response.IsSuccessStatusCode ? null : $"HTTP {(int)response.StatusCode}: {response.ReasonPhrase}"
+				};
+
+				var message = response.IsSuccessStatusCode
+					? "HTTP connection test successful"
+					: $"HTTP connection returned status {(int)response.StatusCode}";
+
+				return ApiResponse<TestHttpConnectionResponseDto>.Success(result, message);
+			}
+			catch (HttpRequestException ex)
+			{
+				var errorResult = new TestHttpConnectionResponseDto
+				{
+					RequestUrl = request.Url,
+					RequestMethod = request.Method ?? "GET",
+					IsSuccess = false,
+					ErrorMessage = $"HTTP request failed: {ex.Message}"
+				};
+				return ApiResponse<TestHttpConnectionResponseDto>.Fail(400, "HTTP request failed", errorResult);
+			}
+			catch (TaskCanceledException)
+			{
+				var errorResult = new TestHttpConnectionResponseDto
+				{
+					RequestUrl = request.Url,
+					RequestMethod = request.Method ?? "GET",
+					IsSuccess = false,
+					ErrorMessage = "Request timeout (30 seconds exceeded)"
+				};
+				return ApiResponse<TestHttpConnectionResponseDto>.Fail(408, "Request timeout", errorResult);
+			}
+			catch (Exception ex)
+			{
+				var errorResult = new TestHttpConnectionResponseDto
+				{
+					RequestUrl = request.Url,
+					RequestMethod = request.Method ?? "GET",
+					IsSuccess = false,
+					ErrorMessage = ex.Message
+				};
+				return ApiResponse<TestHttpConnectionResponseDto>.Fail(500, "An error occurred while testing HTTP connection", errorResult);
+			}
 		}
 
 		private static string ValidateAndSerializeConfig<T>(object config)

@@ -6,15 +6,18 @@ using Infrastructure.Data;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Configuration;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.SignalR;
 using System.Text.Json;
+using Newtonsoft.Json.Linq;
+using System.Data.Common;
 
 namespace Infrastructure.Services
 {
     /// <summary>
-    /// Background service that polls enabled devices based on their polling interval
-    /// and sends data to clients via SignalR (no database storage)
+    /// Background service that polls enabled devices based on their polling interval,
+    /// sends data to clients via SignalR, and stores data to master tables via storage flows
     /// </summary>
     /// <typeparam name="THub">The SignalR Hub type for broadcasting data</typeparam>
     public class DeviceWorkerService<THub> : BackgroundService where THub : Hub
@@ -23,18 +26,24 @@ namespace Infrastructure.Services
         private readonly IHubContext<THub> _hubContext;
         private readonly IHttpClientFactory _httpClientFactory;
         private readonly ILogger<DeviceWorkerService<THub>> _logger;
+        private readonly IConfiguration _configuration;
+        private readonly string _deviceGroupPrefix;
         private readonly Dictionary<Guid, CancellationTokenSource> _deviceTasks = new();
+        private readonly Dictionary<Guid, CancellationTokenSource> _storageFlowTasks = new();
 
         public DeviceWorkerService(
             IServiceProvider serviceProvider,
             IHubContext<THub> hubContext,
             IHttpClientFactory httpClientFactory,
-            ILogger<DeviceWorkerService<THub>> logger)
+            ILogger<DeviceWorkerService<THub>> logger,
+            IConfiguration configuration)
         {
             _serviceProvider = serviceProvider;
             _hubContext = hubContext;
             _httpClientFactory = httpClientFactory;
             _logger = logger;
+            _configuration = configuration;
+            _deviceGroupPrefix = _configuration["SignalRSettings:GroupPrefix:Device"] ?? "device_";
         }
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -78,6 +87,9 @@ namespace Infrastructure.Services
                         await _deviceTasks[deviceId].CancelAsync();
                         _deviceTasks.Remove(deviceId);
                     }
+
+                    // Handle StorageFlows
+                    await ManageStorageFlowsAsync(dbContext, stoppingToken);
                 }
                 catch (Exception ex)
                 {
@@ -87,6 +99,394 @@ namespace Infrastructure.Services
                 // Check for device changes every 10 seconds
                 await Task.Delay(TimeSpan.FromSeconds(10), stoppingToken);
             }
+        }
+
+        private async Task ManageStorageFlowsAsync(AppDbContext dbContext, CancellationToken stoppingToken)
+        {
+            try
+            {
+                // Get all active storage flows
+                var activeFlows = await dbContext.StorageFlows
+                    .Where(sf => sf.IsActive && sf.DeletedAt == null)
+                    .Include(sf => sf.MasterTable)
+                        .ThenInclude(mt => mt.Fields.Where(f => f.DeletedAt == null && f.IsEnabled))
+                    .Include(sf => sf.StorageFlowDevices)
+                        .ThenInclude(sfd => sfd.Device)
+                    .Include(sf => sf.StorageFlowMappings)
+                        .ThenInclude(sfm => sfm.MasterTableField)
+                    .Include(sf => sf.StorageFlowMappings)
+                        .ThenInclude(sfm => sfm.Tag)
+                    .ToListAsync(stoppingToken);
+
+                // Start tasks for new storage flows
+                foreach (var flow in activeFlows)
+                {
+                    if (!_storageFlowTasks.ContainsKey(flow.Id))
+                    {
+                        _logger.LogInformation($"Starting storage flow: {flow.Name} ({flow.Id})");
+                        var cts = new CancellationTokenSource();
+                        _storageFlowTasks[flow.Id] = cts;
+
+                        // Start storage flow in background
+                        _ = Task.Run(() => ExecuteStorageFlowAsync(flow, cts.Token), stoppingToken);
+                    }
+                }
+
+                // Stop tasks for inactive flows
+                var flowIdsToRemove = _storageFlowTasks.Keys
+                    .Where(id => !activeFlows.Any(f => f.Id == id))
+                    .ToList();
+
+                foreach (var flowId in flowIdsToRemove)
+                {
+                    _logger.LogInformation($"Stopping storage flow: {flowId}");
+                    await _storageFlowTasks[flowId].CancelAsync();
+                    _storageFlowTasks.Remove(flowId);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error managing storage flows");
+            }
+        }
+
+        private async Task ExecuteStorageFlowAsync(StorageFlow flow, CancellationToken cancellationToken)
+        {
+            _logger.LogInformation($"Storage flow '{flow.Name}' started with interval {flow.StorageInterval}ms");
+
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                try
+                {
+                    using var scope = _serviceProvider.CreateScope();
+                    var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+
+                    // Reload flow with fresh data
+                    var currentFlow = await dbContext.StorageFlows
+                        .Where(sf => sf.Id == flow.Id && sf.IsActive && sf.DeletedAt == null)
+                        .Include(sf => sf.MasterTable)
+                            .ThenInclude(mt => mt.Fields.Where(f => f.DeletedAt == null && f.IsEnabled))
+                        .Include(sf => sf.StorageFlowDevices)
+                            .ThenInclude(sfd => sfd.Device)
+                        .Include(sf => sf.StorageFlowMappings)
+                            .ThenInclude(sfm => sfm.MasterTableField)
+                        .Include(sf => sf.StorageFlowMappings)
+                            .ThenInclude(sfm => sfm.Tag)
+                                .ThenInclude(t => t!.Device)
+                        .FirstOrDefaultAsync(cancellationToken);
+
+                    if (currentFlow == null)
+                    {
+                        _logger.LogWarning($"Storage flow {flow.Id} not found or no longer active");
+                        break;
+                    }
+
+                    // Process each device in the flow
+                    foreach (var flowDevice in currentFlow.StorageFlowDevices)
+                    {
+                        if (flowDevice.Device?.IsEnabled == true)
+                        {
+                            await ProcessDeviceDataAsync(currentFlow, flowDevice.Device, dbContext, cancellationToken);
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, $"Error executing storage flow '{flow.Name}'");
+                }
+
+                // Wait for the storage interval
+                await Task.Delay(flow.StorageInterval, cancellationToken);
+            }
+
+            _logger.LogInformation($"Storage flow '{flow.Name}' stopped");
+        }
+
+        private async Task ProcessDeviceDataAsync(StorageFlow flow, Device device, AppDbContext dbContext, CancellationToken _)
+        {
+            try
+            {
+                _logger.LogInformation($"[StorageFlow:{flow.Name}] Processing device: {device.Name}");
+
+                // Get device data based on protocol
+                object? responseData = await GetDeviceDataAsync(device);
+
+                if (responseData == null)
+                {
+                    _logger.LogWarning($"[StorageFlow:{flow.Name}] No data received from device {device.Name}");
+                    return;
+                }
+
+                _logger.LogInformation($"[StorageFlow:{flow.Name}] Device data received: {JsonSerializer.Serialize(responseData)}");
+
+                // Extract and map data according to flow mappings
+                var mappedData = ExtractMappedData(flow, device, responseData);
+
+                if (mappedData.Count == 0)
+                {
+                    _logger.LogWarning($"[StorageFlow:{flow.Name}] No data could be mapped for device {device.Name} - Check your source_path mappings!");
+                    return;
+                }
+
+                _logger.LogInformation($"[StorageFlow:{flow.Name}] Mapped data: {JsonSerializer.Serialize(mappedData)}");
+
+                // Insert data into physical table
+                await InsertDataIntoTableAsync(flow.MasterTable.TableName, mappedData, dbContext);
+
+                _logger.LogInformation($"[StorageFlow:{flow.Name}] ✅ Data stored from device {device.Name} to table {flow.MasterTable.TableName}");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"Error processing device data for {device.Name} in flow {flow.Name}");
+            }
+        }
+
+        private async Task<object?> GetDeviceDataAsync(Device device)
+        {
+            try
+            {
+                return device.Protocol switch
+                {
+                    Protocol.HTTP => await GetHttpDataAsync(device),
+                    Protocol.MQTT => await GetMqttDataAsync(device),
+                    Protocol.MODBUS_TCP or Protocol.MODBUS_RTU => await GetModbusDataAsync(device),
+                    Protocol.OPC_UA => await GetOpcUaDataAsync(device),
+                    _ => null
+                };
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"Error getting data from device {device.Name}");
+                return null;
+            }
+        }
+
+        private async Task<object?> GetHttpDataAsync(Device device)
+        {
+            var config = device.GetConfig<HttpConfig>();
+            if (config == null) return null;
+
+            var client = _httpClientFactory.CreateClient();
+            client.Timeout = TimeSpan.FromSeconds(10);
+
+            if (config.Headers != null)
+            {
+                foreach (var header in config.Headers)
+                {
+                    client.DefaultRequestHeaders.Add(header.Key, header.Value);
+                }
+            }
+
+            HttpResponseMessage response = config.Method.ToUpper() switch
+            {
+                "GET" => await client.GetAsync(config.Url),
+                "POST" => await client.PostAsync(config.Url, null),
+                _ => throw new InvalidOperationException($"Unsupported HTTP method: {config.Method}")
+            };
+
+            response.EnsureSuccessStatusCode();
+            var json = await response.Content.ReadAsStringAsync();
+            return JsonSerializer.Deserialize<object>(json);
+        }
+
+        private Task<object?> GetMqttDataAsync(Device device)
+        {
+            var config = device.GetConfig<MqttConfig>();
+            if (config == null) return Task.FromResult<object?>(null);
+
+            // Simulated MQTT data
+            var random = new Random();
+            var data = new
+            {
+                topic = config.Topic,
+                temperature = Math.Round(20 + random.NextDouble() * 15, 2),
+                humidity = Math.Round(40 + random.NextDouble() * 40, 2),
+                pressure = Math.Round(1000 + random.NextDouble() * 50, 2)
+            };
+
+            return Task.FromResult<object?>(data);
+        }
+
+        private async Task<object?> GetModbusDataAsync(Device device)
+        {
+            // Get tags for this device
+            using var scope = _serviceProvider.CreateScope();
+            var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+
+            var tags = await dbContext.Tags
+                .Where(t => t.DeviceId == device.Id && t.DeletedAt == null)
+                .ToListAsync();
+
+            // Simulate reading tag values
+            var data = new Dictionary<string, object>();
+            var random = new Random();
+
+            foreach (var tag in tags)
+            {
+                // Simulate tag value based on data type
+                object value = tag.DataType switch
+                {
+                    DataType.INT16 or DataType.INT32 => random.Next(0, 100),
+                    DataType.UINT16 or DataType.UINT32 => random.Next(0, 100),
+                    DataType.FLOAT => Math.Round(random.NextDouble() * 100, 2),
+                    DataType.BOOLEAN => random.Next(0, 2) == 1,
+                    DataType.STRING => $"Value_{random.Next(1, 10)}",
+                    _ => 0
+                };
+
+                // Apply scaling if enabled
+                if (tag.IsScaled && tag.DataType == DataType.FLOAT && 
+                    tag.RawMin.HasValue && tag.RawMax.HasValue && 
+                    tag.EuMin.HasValue && tag.EuMax.HasValue)
+                {
+                    var rawValue = (double)value;
+                    value = tag.EuMin.Value + 
+                        (rawValue - tag.RawMin.Value) * (tag.EuMax.Value - tag.EuMin.Value) / 
+                        (tag.RawMax.Value - tag.RawMin.Value);
+                }
+
+                data[tag.Name] = value;
+            }
+
+            return data;
+        }
+
+        private async Task<object?> GetOpcUaDataAsync(Device device)
+        {
+            // Similar to Modbus, use tags
+            using var scope = _serviceProvider.CreateScope();
+            var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+
+            var tags = await dbContext.Tags
+                .Where(t => t.DeviceId == device.Id && t.DeletedAt == null)
+                .ToListAsync();
+
+            var data = new Dictionary<string, object>();
+            var random = new Random();
+
+            foreach (var tag in tags)
+            {
+                object value = tag.DataType switch
+                {
+                    DataType.INT16 or DataType.INT32 => random.Next(0, 100),
+                    DataType.UINT16 or DataType.UINT32 => random.Next(0, 100),
+                    DataType.FLOAT => Math.Round(random.NextDouble() * 100, 2),
+                    DataType.BOOLEAN => random.Next(0, 2) == 1,
+                    DataType.STRING => $"Value_{random.Next(1, 10)}",
+                    _ => 0
+                };
+
+                data[tag.Name] = value;
+            }
+
+            return data;
+        }
+
+        private Dictionary<string, object> ExtractMappedData(StorageFlow flow, Device device, object responseData)
+        {
+            var mappedData = new Dictionary<string, object>();
+
+            try
+            {
+                // Convert response to JSON string for JSONPath processing
+                var jsonString = JsonSerializer.Serialize(responseData);
+                var jToken = JToken.Parse(jsonString);
+
+                _logger.LogDebug($"[ExtractData] Processing {flow.StorageFlowMappings.Count} mappings for device {device.Name}");
+
+                foreach (var mapping in flow.StorageFlowMappings)
+                {
+                    try
+                    {
+                        object? value = null;
+
+                        // For HTTP/MQTT, use JSONPath
+                        if (device.Protocol == Protocol.HTTP || device.Protocol == Protocol.MQTT)
+                        {
+                            _logger.LogDebug($"[ExtractData] Trying JSONPath: {mapping.SourcePath} -> Field: {mapping.MasterTableField.Name}");
+
+                            // Use SelectToken for JSONPath
+                            var token = jToken.SelectToken(mapping.SourcePath);
+                            if (token != null)
+                            {
+                                value = token.ToObject<object>();
+                                _logger.LogDebug($"[ExtractData] ✅ Extracted value: {value}");
+                            }
+                            else
+                            {
+                                _logger.LogWarning($"[ExtractData] ❌ JSONPath '{mapping.SourcePath}' returned null - Check if path is correct!");
+                            }
+                        }
+                        // For MODBUS/OPCUA, use Tag name from dictionary
+                        else if (device.Protocol == Protocol.MODBUS_TCP || device.Protocol == Protocol.MODBUS_RTU || device.Protocol == Protocol.OPC_UA)
+                        {
+                            if (responseData is Dictionary<string, object> dict)
+                            {
+                                dict.TryGetValue(mapping.SourcePath, out value);
+                            }
+                        }
+
+                        if (value != null)
+                        {
+                            mappedData[mapping.MasterTableField.Name] = value;
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, $"[ExtractData] Failed to extract data for path '{mapping.SourcePath}'");
+                    }
+                }
+
+                _logger.LogInformation($"[ExtractData] Successfully mapped {mappedData.Count} fields out of {flow.StorageFlowMappings.Count} mappings");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error extracting mapped data");
+            }
+
+            return mappedData;
+        }
+
+        private async Task InsertDataIntoTableAsync(string tableName, Dictionary<string, object> data, AppDbContext dbContext)
+        {
+            if (data.Count == 0) return;
+
+            try
+            {
+                // Build INSERT statement
+                var columns = new List<string> { "`Id`", "`CreatedAt`" };
+                var values = new List<string> { $"'{Guid.NewGuid()}'", "NOW()" };
+
+                foreach (var kvp in data)
+                {
+                    columns.Add($"`{kvp.Key}`");
+                    values.Add(FormatValueForSql(kvp.Value));
+                }
+
+                var insertSql = $"INSERT INTO `{tableName}` ({string.Join(", ", columns)}) VALUES ({string.Join(", ", values)})";
+
+                await dbContext.Database.ExecuteSqlRawAsync(insertSql);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"Error inserting data into table {tableName}");
+                throw;
+            }
+        }
+
+        private static string FormatValueForSql(object value)
+        {
+            if (value == null) return "NULL";
+
+            return value switch
+            {
+                string s => $"'{s.Replace("'", "''")}'" ,
+                bool b => b ? "1" : "0",
+                DateTime dt => $"'{dt:yyyy-MM-dd HH:mm:ss}'",
+                int or long or short or byte => value.ToString()!,
+                float or double or decimal => value.ToString()!.Replace(",", "."),
+                _ => $"'{value.ToString()!.Replace("'", "''")}'"
+            };
         }
 
         private async Task PollDeviceAsync(Device device, CancellationToken cancellationToken)
@@ -110,7 +510,7 @@ namespace Infrastructure.Services
                         await _hubContext.Clients.All.SendAsync("ReceiveDeviceData", data, cancellationToken);
 
                         // Also broadcast to specific device group
-                        await _hubContext.Clients.Group($"device_{device.Id}")
+                        await _hubContext.Clients.Group($"{_deviceGroupPrefix}{device.Id}")
                             .SendAsync("ReceiveDeviceData", data, cancellationToken);
 
                         _logger.LogDebug($"Data sent for device {device.Name}: {JsonSerializer.Serialize(data.Data)}");
@@ -232,6 +632,14 @@ namespace Infrastructure.Services
             }
 
             _deviceTasks.Clear();
+
+            // Cancel all storage flow tasks
+            foreach (var cts in _storageFlowTasks.Values)
+            {
+                await cts.CancelAsync();
+            }
+
+            _storageFlowTasks.Clear();
 
             await base.StopAsync(cancellationToken);
         }

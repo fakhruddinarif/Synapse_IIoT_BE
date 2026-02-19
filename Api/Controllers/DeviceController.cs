@@ -136,5 +136,29 @@ namespace Api.Controllers
 
 			return Ok(data);
 		}
+
+	/// <summary>
+	/// Test HTTP connection to external API (with actual request)
+	/// POST /api/device/test-http-connection
+	/// Support testing external APIs like OpenWeather, JSONPlaceholder, etc.
+	/// </summary>
+	[HttpPost("test-http-connection")]
+	[AllowAnonymous]
+	public async Task<IActionResult> TestHttpConnection([FromBody] TestHttpRequestDto request)
+	{
+		try
+		{
+			var result = await _deviceService.TestHttpConnectionAsync(request);
+			return StatusCode(result.Status, result);
+		}
+		catch (Exception ex)
+		{
+			return StatusCode(500, new { 
+				status = 500, 
+				message = "An error occurred while testing HTTP connection", 
+				error = ex.Message 
+			});
+		}
 	}
+}
 }

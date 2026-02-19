@@ -24,12 +24,15 @@ builder.Services.AddScoped<IUserRepository, UserRepository>();
 builder.Services.AddScoped<IDeviceRepository, DeviceRepository>();
 builder.Services.AddScoped<IMasterTableRepository, MasterTableRepository>();
 builder.Services.AddScoped<IMasterTableFieldsRepository, MasterTableFieldsRepository>();
+builder.Services.AddScoped<IStorageFlowRepository, StorageFlowRepository>();
 
 // Register Services
 builder.Services.AddScoped<ITokenService, TokenService>();
 builder.Services.AddScoped<IAuthService, AuthService>();
 builder.Services.AddScoped<IDeviceService, DeviceService>();
 builder.Services.AddScoped<IMasterTableService, MasterTableService>();
+builder.Services.AddScoped<IStorageFlowService, StorageFlowService>();
+builder.Services.AddScoped<IFileService, FileService>();
 
 // Register HttpClient for HTTP device polling
 builder.Services.AddHttpClient();
@@ -189,6 +192,9 @@ if (app.Environment.IsDevelopment())
 }
 
 app.UseCors("App");
+
+// Enable serving static files (for uploaded files)
+app.UseStaticFiles();
 
 // Only use HTTPS redirection in production
 if (!app.Environment.IsDevelopment())

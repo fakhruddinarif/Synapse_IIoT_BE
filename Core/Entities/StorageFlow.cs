@@ -27,5 +27,9 @@ namespace Core.Entities
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow; // Timestamp for when the user was created
         public DateTime? UpdatedAt { get; set; } = null; // Timestamp for when the user was last updated
         public DateTime? DeletedAt { get; set; } = null; // Timestamp for when the user was deleted (soft delete)
+
+        // Navigation properties
+        public ICollection<StorageFlowDevice> StorageFlowDevices { get; set; } = new List<StorageFlowDevice>();
+        public ICollection<StorageFlowMapping> StorageFlowMappings { get; set; } = new List<StorageFlowMapping>();
     }
 }
