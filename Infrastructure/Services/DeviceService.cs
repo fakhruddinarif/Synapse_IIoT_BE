@@ -11,12 +11,17 @@ namespace Infrastructure.Services
 	{
 		private readonly IDeviceRepository _deviceRepository;
 		private readonly IHttpClientFactory _httpClientFactory;
+		private readonly IDeviceWorkerService _deviceWorkerService;
 		private static readonly JsonSerializerOptions _jsonOptions = new() { PropertyNameCaseInsensitive = true };
 
-		public DeviceService(IDeviceRepository deviceRepository, IHttpClientFactory httpClientFactory)
+		public DeviceService(
+			IDeviceRepository deviceRepository, 
+			IHttpClientFactory httpClientFactory,
+			IDeviceWorkerService deviceWorkerService)
 		{
 			_deviceRepository = deviceRepository;
 			_httpClientFactory = httpClientFactory;
+			_deviceWorkerService = deviceWorkerService;
 		}
 
 		public async Task<ApiResponse<DeviceResponseDto>> GetByIdAsync(Guid id)
@@ -86,6 +91,9 @@ namespace Infrastructure.Services
 			};
 
 			var createdDevice = await _deviceRepository.CreateAsync(device);
+
+			// Trigger event-driven update
+			await _deviceWorkerService.RefreshDeviceAsync(createdDevice.Id);
 
 			return ApiResponse<DeviceResponseDto>.SuccessWithStatus(201, DeviceResponseDto.FromEntity(createdDevice), "Device created successfully");
 		}
@@ -169,6 +177,9 @@ namespace Infrastructure.Services
 
 			var updatedDevice = await _deviceRepository.UpdateAsync(device);
 
+			// Trigger event-driven update
+			await _deviceWorkerService.RefreshDeviceAsync(updatedDevice!.Id);
+
 			return ApiResponse<DeviceResponseDto>.Success(DeviceResponseDto.FromEntity(updatedDevice!), "Device updated successfully");
 		}
 
@@ -182,6 +193,9 @@ namespace Infrastructure.Services
 			}
 
 			await _deviceRepository.DeleteAsync(id);
+
+			// Trigger event-driven removal
+			await _deviceWorkerService.RemoveDeviceAsync(id);
 
 			return ApiResponse<object>.Success(null, "Device deleted successfully");
 		}

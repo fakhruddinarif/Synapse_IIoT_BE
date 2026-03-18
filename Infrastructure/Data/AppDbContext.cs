@@ -24,6 +24,7 @@ namespace Infrastructure.Data
 		public DbSet<StorageFlowDevice> StorageFlowDevices { get; set; }
 		public DbSet<StorageFlowMapping> StorageFlowMappings { get; set; }
 		public DbSet<FileMetadata> FileMetadata { get; set; }
+		public DbSet<AuditLog> AuditLogs { get; set; }
 
 		// Fluent API configurations
 		protected override void OnModelCreating(ModelBuilder modelBuilder)

@@ -1,0 +1,457 @@
+{
+  "info": {
+    "_postman_id": "b1e2c3d4-5678-1234-9abc-def012345678",
+    "name": "Synapse IIoT Backend APIs",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "description": "Collection of Synapse IIoT Backend APIs as described in Synapse_Backend_APIs.md"
+  },
+  "item": [
+    {
+      "name": "Authentication",
+      "item": [
+        {
+          "name": "Register New User",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"admin\",\n  \"email\": \"admin@example.com\",\n  \"password\": \"SecurePass123!\",\n  \"role\": \"ADMIN\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/auth/register",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "register"]
+            }
+          }
+        },
+        {
+          "name": "Login",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"admin@example.com\",\n  \"password\": \"SecurePass123!\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/auth/login",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "login"]
+            }
+          }
+        },
+        {
+          "name": "Get Current User Info",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/auth/me",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "me"]
+            }
+          }
+        },
+        {
+          "name": "Logout",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/auth/logout",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "logout"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Device Management",
+      "item": [
+        {
+          "name": "Get All Devices",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/device?page=1&pageSize=10",
+              "host": ["{{baseUrl}}"],
+              "path": ["device"],
+              "query": [
+                { "key": "page", "value": "1" },
+                { "key": "pageSize", "value": "10" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Device by ID",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/device/:id",
+              "host": ["{{baseUrl}}"],
+              "path": ["device", ":id"]
+            }
+          }
+        },
+        {
+          "name": "Create Device",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Sensor-001\",\n  \"description\": \"Temperature & Humidity Sensor\",\n  \"isEnabled\": true,\n  \"protocol\": \"HTTP\",\n  \"pollingInterval\": 5000,\n  \"connectionConfig\": {\n    \"url\": \"http://192.168.1.100/api/sensor\",\n    \"method\": \"GET\",\n    \"headers\": {\n      \"Authorization\": \"Bearer your-token\"\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/device",
+              "host": ["{{baseUrl}}"],
+              "path": ["device"]
+            }
+          }
+        },
+        {
+          "name": "Update Device",
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Sensor-001-Updated\",\n  \"description\": \"Updated description\",\n  \"isEnabled\": false,\n  \"protocol\": \"HTTP\",\n  \"pollingInterval\": 10000,\n  \"connectionConfig\": {\n    \"url\": \"http://192.168.1.100/api/sensor/v2\",\n    \"method\": \"POST\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/device/:id",
+              "host": ["{{baseUrl}}"],
+              "path": ["device", ":id"]
+            }
+          }
+        },
+        {
+          "name": "Delete Device",
+          "request": {
+            "method": "DELETE",
+            "url": {
+              "raw": "{{baseUrl}}/device/:id",
+              "host": ["{{baseUrl}}"],
+              "path": ["device", ":id"]
+            }
+          }
+        },
+        {
+          "name": "Test HTTP Device Connection",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"url\": \"http://192.168.1.100/api/sensor\",\n  \"method\": \"GET\",\n  \"headers\": {\n    \"Authorization\": \"Bearer test-token\"\n  },\n  \"body\": null\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/device/http-test",
+              "host": ["{{baseUrl}}"],
+              "path": ["device", "http-test"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Master Table Management",
+      "item": [
+        {
+          "name": "Get All Master Tables",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/master-table?page=1&pageSize=10",
+              "host": ["{{baseUrl}}"],
+              "path": ["master-table"],
+              "query": [
+                { "key": "page", "value": "1" },
+                { "key": "pageSize", "value": "10" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Master Table by ID",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/master-table/:id",
+              "host": ["{{baseUrl}}"],
+              "path": ["master-table", ":id"]
+            }
+          }
+        },
+        {
+          "name": "Create Master Table",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"SensorData\",\n  \"tableName\": \"sensor_data_table\",\n  \"description\": \"Storage for sensor readings\",\n  \"isActive\": true,\n  \"fields\": [\n    {\"name\": \"temperature\", \"dataType\": \"FLOAT\", \"isEnabled\": true},\n    {\"name\": \"humidity\", \"dataType\": \"FLOAT\", \"isEnabled\": true},\n    {\"name\": \"status\", \"dataType\": \"STRING\", \"isEnabled\": true},\n    {\"name\": \"timestamp_custom\", \"dataType\": \"DATETIME\", \"isEnabled\": true}\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/master-table",
+              "host": ["{{baseUrl}}"],
+              "path": ["master-table"]
+            }
+          }
+        },
+        {
+          "name": "Update Master Table",
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": {
+              "raw": "{{baseUrl}}/master-table/:id",
+              "host": ["{{baseUrl}}"],
+              "path": ["master-table", ":id"]
+            }
+          }
+        },
+        {
+          "name": "Delete Master Table",
+          "request": {
+            "method": "DELETE",
+            "url": {
+              "raw": "{{baseUrl}}/master-table/:id",
+              "host": ["{{baseUrl}}"],
+              "path": ["master-table", ":id"]
+            }
+          }
+        },
+        {
+          "name": "Add Field to Master Table",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"pressure\",\n  \"dataType\": \"FLOAT\",\n  \"isEnabled\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/master-table/:masterTableId/field",
+              "host": ["{{baseUrl}}"],
+              "path": ["master-table", ":masterTableId", "field"]
+            }
+          }
+        },
+        {
+          "name": "Update Field",
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": {
+              "raw": "{{baseUrl}}/master-table/:masterTableId/field/:fieldId",
+              "host": ["{{baseUrl}}"],
+              "path": ["master-table", ":masterTableId", "field", ":fieldId"]
+            }
+          }
+        },
+        {
+          "name": "Delete Field",
+          "request": {
+            "method": "DELETE",
+            "url": {
+              "raw": "{{baseUrl}}/master-table/:masterTableId/field/:fieldId",
+              "host": ["{{baseUrl}}"],
+              "path": ["master-table", ":masterTableId", "field", ":fieldId"]
+            }
+          }
+        },
+        {
+          "name": "Get All Fields of a Master Table",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/master-table/:masterTableId/fields",
+              "host": ["{{baseUrl}}"],
+              "path": ["master-table", ":masterTableId", "fields"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Storage Flow",
+      "item": [
+        {
+          "name": "Get All Storage Flows",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/storage-flow?page=1&pageSize=10",
+              "host": ["{{baseUrl}}"],
+              "path": ["storage-flow"],
+              "query": [
+                { "key": "page", "value": "1" },
+                { "key": "pageSize", "value": "10" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Storage Flow by ID",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/storage-flow/:id",
+              "host": ["{{baseUrl}}"],
+              "path": ["storage-flow", ":id"]
+            }
+          }
+        },
+        {
+          "name": "Create Storage Flow",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Sensor Data Flow\",\n  \"description\": \"Automatic data storage from sensors\",\n  \"isActive\": true,\n  \"storageInterval\": 10000,\n  \"masterTableId\": \"table-guid-1\",\n  \"deviceIds\": [\"device-guid-1\", \"device-guid-2\"],\n  \"mappings\": [\n    {\"masterTableFieldId\": \"field-temperature-guid\", \"sourcePath\": \"$.data.temperature\"},\n    {\"masterTableFieldId\": \"field-humidity-guid\", \"sourcePath\": \"$.data.humidity\"},\n    {\"masterTableFieldId\": \"field-status-guid\", \"sourcePath\": \"$.message\"}\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/storage-flow",
+              "host": ["{{baseUrl}}"],
+              "path": ["storage-flow"]
+            }
+          }
+        },
+        {
+          "name": "Update Storage Flow",
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": {
+              "raw": "{{baseUrl}}/storage-flow/:id",
+              "host": ["{{baseUrl}}"],
+              "path": ["storage-flow", ":id"]
+            }
+          }
+        },
+        {
+          "name": "Delete Storage Flow",
+          "request": {
+            "method": "DELETE",
+            "url": {
+              "raw": "{{baseUrl}}/storage-flow/:id",
+              "host": ["{{baseUrl}}"],
+              "path": ["storage-flow", ":id"]
+            }
+          }
+        },
+        {
+          "name": "Discover Fields from Device",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"deviceId\": \"device-guid-1\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/storage-flow/discover-fields",
+              "host": ["{{baseUrl}}"],
+              "path": ["storage-flow", "discover-fields"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "File Upload Management",
+      "item": [
+        {
+          "name": "Upload Single File",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "multipart/form-data" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/file/upload",
+              "host": ["{{baseUrl}}"],
+              "path": ["file", "upload"]
+            }
+          }
+        },
+        {
+          "name": "Upload Multiple Files",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "multipart/form-data" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/file/upload-multiple",
+              "host": ["{{baseUrl}}"],
+              "path": ["file", "upload-multiple"]
+            }
+          }
+        },
+        {
+          "name": "Upload File for Entity Field",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "multipart/form-data" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/file/upload-field",
+              "host": ["{{baseUrl}}"],
+              "path": ["file", "upload-field"]
+            }
+          }
+        },
+        {
+          "name": "Delete File",
+          "request": {
+            "method": "DELETE",
+            "url": {
+              "raw": "{{baseUrl}}/file/delete",
+              "host": ["{{baseUrl}}"],
+              "path": ["file", "delete"]
+            }
+          }
+        },
+        {
+          "name": "Get Upload Configuration",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/file/config",
+              "host": ["{{baseUrl}}"],
+              "path": ["file", "config"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "SignalR Real-Time Communication",
+      "item": [
+        {
+          "name": "Device Data Hub (WebSocket)",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "ws://localhost:5000/deviceHub",
+              "host": ["ws://localhost:5000"],
+              "path": ["deviceHub"]
+            },
+            "description": "Connect using WebSocket/SignalR client. Use withCredentials: true."
+          }
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:5009/api"
+    }
+  ]
+}

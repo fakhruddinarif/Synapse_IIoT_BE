@@ -9,6 +9,7 @@ using Core.Interface;
 using Infrastructure.Repositories;
 using Infrastructure.Services;
 using Api.Middlewares;
+using Core.DTOs.Tag;
 using System.Text.Json.Serialization;
 using Api.Hubs;
 
@@ -25,6 +26,8 @@ builder.Services.AddScoped<IDeviceRepository, DeviceRepository>();
 builder.Services.AddScoped<IMasterTableRepository, MasterTableRepository>();
 builder.Services.AddScoped<IMasterTableFieldsRepository, MasterTableFieldsRepository>();
 builder.Services.AddScoped<IStorageFlowRepository, StorageFlowRepository>();
+builder.Services.AddScoped<IAuditLogRepository, AuditLogRepository>();
+builder.Services.AddScoped<ITagRepository, TagRepository>();
 
 // Register Services
 builder.Services.AddScoped<ITokenService, TokenService>();
@@ -33,31 +36,66 @@ builder.Services.AddScoped<IDeviceService, DeviceService>();
 builder.Services.AddScoped<IMasterTableService, MasterTableService>();
 builder.Services.AddScoped<IStorageFlowService, StorageFlowService>();
 builder.Services.AddScoped<IFileService, FileService>();
+builder.Services.AddScoped<ITagService, TagService>();
 
 // Register HttpClient for HTTP device polling
 builder.Services.AddHttpClient();
+
+// Register CORS for Frontend Communication
+builder.Services.AddCors(options =>
+{
+	options.AddPolicy("AllowFrontend", policy =>
+	{
+		policy
+			.WithOrigins(
+				"http://localhost:5173",
+				"http://localhost:3000",
+				"http://localhost:4173",
+				"http://127.0.0.1:5173",
+				"http://127.0.0.1:3000"
+			)
+			.AllowAnyMethod()
+			.AllowAnyHeader()
+			.AllowCredentials() // Critical for JWT cookies
+			.WithExposedHeaders("X-Total-Count", "X-Page-Number", "X-Total-Pages");
+	});
+});
 
 // Register SignalR for real-time data streaming
 builder.Services.AddSignalR(options =>
 {
 	options.EnableDetailedErrors = true;
+	options.MaximumReceiveMessageSize = 64 * 1024; // 64KB max message
 });
 
-// Register Background Worker Service for device polling (after SignalR)
-builder.Services.AddHostedService<DeviceWorkerService<DeviceDataHub>>();
+// Register Background Worker Service for device polling (event-driven)
+// Must be registered as Singleton so it can be injected into scoped services
+builder.Services.AddSingleton<IDeviceWorkerService, DeviceWorkerService<DeviceDataHub>>();
+builder.Services.AddHostedService(provider => (DeviceWorkerService<DeviceDataHub>)provider.GetRequiredService<IDeviceWorkerService>());
 
-// Config Rate Limiting
+// Config Rate Limiting (Optimized for Real-time Dashboard)
 builder.Services.AddRateLimiter(options =>
 {
-	options.AddFixedWindowLimiter("Fixed", limiterOptions =>
+	// General API limiter - allows real-time dashboard traffic
+	options.AddFixedWindowLimiter("Default", limiterOptions =>
 	{
-		limiterOptions.PermitLimit = 10; // Max 100 requests
-		limiterOptions.Window = TimeSpan.FromMinutes(1); // Per 1 minute
+		limiterOptions.PermitLimit = 100;      // 100 requests
+		limiterOptions.Window = TimeSpan.FromMinutes(1); // per 1 minute
 		limiterOptions.QueueProcessingOrder = QueueProcessingOrder.OldestFirst;
-		limiterOptions.QueueLimit = 0; // No queuing, reject immediately when limit is reached
+		limiterOptions.QueueLimit = 5;         // Queue up to 5 requests
 	});
 
-	options.RejectionStatusCode = StatusCodes.Status429TooManyRequests; // Too Many Requests
+	// Stricter limiter for login endpoint (Anti-brute-force)
+	options.AddFixedWindowLimiter("Login", limiterOptions =>
+	{
+		limiterOptions.PermitLimit = 5;        // 5 attempts
+		limiterOptions.Window = TimeSpan.FromMinutes(15); // per 15 minutes
+		limiterOptions.QueueProcessingOrder = QueueProcessingOrder.OldestFirst;
+		limiterOptions.QueueLimit = 0;
+	});
+
+	// Default rejection status code
+	options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
 	
 	// Custom response when rate limit exceeded
 	options.OnRejected = async (context, token) =>
@@ -150,36 +188,6 @@ builder.Services.AddControllers()
 // Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
 builder.Services.AddOpenApi();
 
-// Setup CORS policy
-builder.Services.AddCors(options =>
-{
-	options.AddPolicy("App", policy =>
-	{
-		if (builder.Environment.IsDevelopment())
-		{
-			// Development: Allow specific origins for testing
-			policy.WithOrigins(
-				"http://localhost:5173",      // Frontend
-				"http://localhost:5000",      // API (for Postman)
-				"https://localhost:5001",     // API HTTPS (for Postman)
-				"http://localhost:5009"       // Backend URL
-			)
-			.AllowAnyHeader()
-			.AllowAnyMethod()
-			.AllowCredentials() // Wajib TRUE agar Cookie bisa lewat
-			.SetIsOriginAllowed(_ => true); // Allow any origin in development
-		}
-		else
-		{
-			// Production: Strict origin
-			policy.WithOrigins("http://localhost:5173")
-				  .AllowAnyHeader()
-				  .AllowAnyMethod()
-				  .AllowCredentials();
-		}
-	});
-});
-
 var app = builder.Build();
 
 // Configure the HTTP request pipeline.
@@ -191,10 +199,14 @@ if (app.Environment.IsDevelopment())
 	app.MapOpenApi();
 }
 
-app.UseCors("App");
+// CORS must be before authentication
+app.UseCors("AllowFrontend");
 
 // Enable serving static files (for uploaded files)
 app.UseStaticFiles();
+
+// Audit logging middleware to track all user actions
+app.UseMiddleware<AuditLoggingMiddleware>();
 
 // Only use HTTPS redirection in production
 if (!app.Environment.IsDevelopment())
@@ -213,6 +225,6 @@ app.UseAuthorization();
 app.MapControllers();
 
 // Map SignalR Hub for real-time device data
-app.MapHub<DeviceDataHub>("/hubs/device-data");
+app.MapHub<DeviceDataHub>("/signalr/device-hub");
 
 await app.RunAsync();

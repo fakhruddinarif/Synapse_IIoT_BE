@@ -23,19 +23,22 @@ namespace Infrastructure.Services
         private readonly IDeviceRepository _deviceRepository;
         private readonly AppDbContext _context;
         private readonly IHttpClientFactory _httpClientFactory;
+        private readonly IDeviceWorkerService _deviceWorkerService;
 
         public StorageFlowService(
             IStorageFlowRepository storageFlowRepository,
             IMasterTableRepository masterTableRepository,
             IDeviceRepository deviceRepository,
             AppDbContext context,
-            IHttpClientFactory httpClientFactory)
+            IHttpClientFactory httpClientFactory,
+            IDeviceWorkerService deviceWorkerService)
         {
             _storageFlowRepository = storageFlowRepository;
             _masterTableRepository = masterTableRepository;
             _deviceRepository = deviceRepository;
             _context = context;
             _httpClientFactory = httpClientFactory;
+            _deviceWorkerService = deviceWorkerService;
         }
 
         public async Task<StorageFlowResponseDto> GetByIdAsync(Guid id)
@@ -164,6 +167,9 @@ namespace Infrastructure.Services
                 await CreatePhysicalTableAsync(masterTable);
             }
 
+            // Trigger event-driven update
+            await _deviceWorkerService.RefreshStorageFlowAsync(storageFlow.Id);
+
             return await GetByIdAsync(storageFlow.Id);
         }
 
@@ -254,12 +260,23 @@ namespace Infrastructure.Services
             await _storageFlowRepository.UpdateAsync(existingFlow);
             await _context.SaveChangesAsync();
 
+            // Trigger event-driven update
+            await _deviceWorkerService.RefreshStorageFlowAsync(id);
+
             return await GetByIdAsync(id);
         }
 
         public async Task<bool> DeleteAsync(Guid id)
         {
-            return await _storageFlowRepository.DeleteAsync(id);
+            var result = await _storageFlowRepository.DeleteAsync(id);
+            
+            // Trigger event-driven removal
+            if (result)
+            {
+                await _deviceWorkerService.RemoveStorageFlowAsync(id);
+            }
+            
+            return result;
         }
 
         public async Task<List<DiscoveredFieldDto>> DiscoverFieldsAsync(Guid deviceId)

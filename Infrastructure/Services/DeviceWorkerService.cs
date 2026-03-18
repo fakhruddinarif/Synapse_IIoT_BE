@@ -2,6 +2,7 @@ using Core.DTOs;
 using Core.DTOs.Device;
 using Core.Entities;
 using Core.Enums;
+using Core.Interface;
 using Infrastructure.Data;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.DependencyInjection;
@@ -12,15 +13,16 @@ using Microsoft.AspNetCore.SignalR;
 using System.Text.Json;
 using Newtonsoft.Json.Linq;
 using System.Data.Common;
+using System.Threading.Channels;
 
 namespace Infrastructure.Services
 {
     /// <summary>
-    /// Background service that polls enabled devices based on their polling interval,
-    /// sends data to clients via SignalR, and stores data to master tables via storage flows
+    /// Event-driven background service that manages device polling and storage flows.
+    /// Uses Channels for real-time updates when devices or storage flows are created/updated/deleted.
     /// </summary>
     /// <typeparam name="THub">The SignalR Hub type for broadcasting data</typeparam>
-    public class DeviceWorkerService<THub> : BackgroundService where THub : Hub
+    public class DeviceWorkerService<THub> : BackgroundService, IDeviceWorkerService where THub : Hub
     {
         private readonly IServiceProvider _serviceProvider;
         private readonly IHubContext<THub> _hubContext;
@@ -30,6 +32,13 @@ namespace Infrastructure.Services
         private readonly string _deviceGroupPrefix;
         private readonly Dictionary<Guid, CancellationTokenSource> _deviceTasks = new();
         private readonly Dictionary<Guid, CancellationTokenSource> _storageFlowTasks = new();
+        
+        // Channels for event-driven updates
+        private readonly Channel<Guid> _deviceRefreshChannel = Channel.CreateUnbounded<Guid>();
+        private readonly Channel<Guid> _deviceRemoveChannel = Channel.CreateUnbounded<Guid>();
+        private readonly Channel<Guid> _storageFlowRefreshChannel = Channel.CreateUnbounded<Guid>();
+        private readonly Channel<Guid> _storageFlowRemoveChannel = Channel.CreateUnbounded<Guid>();
+        private readonly Channel<bool> _refreshAllChannel = Channel.CreateUnbounded<bool>();
 
         public DeviceWorkerService(
             IServiceProvider serviceProvider,
@@ -46,107 +55,275 @@ namespace Infrastructure.Services
             _deviceGroupPrefix = _configuration["SignalRSettings:GroupPrefix:Device"] ?? "device_";
         }
 
+        #region IDeviceWorkerService Implementation
+
+        public async Task RefreshDeviceAsync(Guid deviceId)
+        {
+            await _deviceRefreshChannel.Writer.WriteAsync(deviceId);
+            _logger.LogInformation($"[Event] Device refresh triggered for: {deviceId}");
+        }
+
+        public async Task RemoveDeviceAsync(Guid deviceId)
+        {
+            await _deviceRemoveChannel.Writer.WriteAsync(deviceId);
+            _logger.LogInformation($"[Event] Device removal triggered for: {deviceId}");
+        }
+
+        public async Task RefreshStorageFlowAsync(Guid storageFlowId)
+        {
+            await _storageFlowRefreshChannel.Writer.WriteAsync(storageFlowId);
+            _logger.LogInformation($"[Event] Storage flow refresh triggered for: {storageFlowId}");
+        }
+
+        public async Task RemoveStorageFlowAsync(Guid storageFlowId)
+        {
+            await _storageFlowRemoveChannel.Writer.WriteAsync(storageFlowId);
+            _logger.LogInformation($"[Event] Storage flow removal triggered for: {storageFlowId}");
+        }
+
+        public async Task RefreshAllAsync()
+        {
+            await _refreshAllChannel.Writer.WriteAsync(true);
+            _logger.LogInformation("[Event] Refresh all triggered");
+        }
+
+        #endregion
+
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
-            _logger.LogInformation("DeviceWorkerService started");
+            _logger.LogInformation("DeviceWorkerService started with event-driven approach");
 
-            while (!stoppingToken.IsCancellationRequested)
+            // Initial load of all devices and storage flows
+            await InitialLoadAsync(stoppingToken);
+
+            // Listen to events from channels
+            _ = Task.Run(() => ListenToDeviceRefreshEventsAsync(stoppingToken), stoppingToken);
+            _ = Task.Run(() => ListenToDeviceRemoveEventsAsync(stoppingToken), stoppingToken);
+            _ = Task.Run(() => ListenToStorageFlowRefreshEventsAsync(stoppingToken), stoppingToken);
+            _ = Task.Run(() => ListenToStorageFlowRemoveEventsAsync(stoppingToken), stoppingToken);
+            _ = Task.Run(() => ListenToRefreshAllEventsAsync(stoppingToken), stoppingToken);
+
+            // Keep service running
+            await Task.Delay(Timeout.Infinite, stoppingToken);
+        }
+
+        private async Task InitialLoadAsync(CancellationToken cancellationToken)
+        {
+            try
+            {
+                _logger.LogInformation("Loading all enabled devices and active storage flows...");
+
+                using var scope = _serviceProvider.CreateScope();
+                var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+
+                // Load all enabled devices
+                var enabledDevices = await dbContext.Devices
+                    .Where(d => d.IsEnabled && d.DeletedAt == null)
+                    .ToListAsync(cancellationToken);
+
+                foreach (var device in enabledDevices)
+                {
+                    await StartDevicePollingAsync(device, cancellationToken);
+                }
+
+                // Load all active storage flows
+                await LoadStorageFlowsAsync(dbContext, cancellationToken);
+
+                _logger.LogInformation($"Initial load completed: {enabledDevices.Count} devices, {_storageFlowTasks.Count} storage flows");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error during initial load");
+            }
+        }
+
+        private async Task ListenToDeviceRefreshEventsAsync(CancellationToken cancellationToken)
+        {
+            await foreach (var deviceId in _deviceRefreshChannel.Reader.ReadAllAsync(cancellationToken))
             {
                 try
                 {
                     using var scope = _serviceProvider.CreateScope();
                     var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
 
-                    // Get all enabled devices
-                    var enabledDevices = await dbContext.Devices
-                        .Where(d => d.IsEnabled && d.DeletedAt == null)
-                        .ToListAsync(stoppingToken);
+                    var device = await dbContext.Devices
+                        .Where(d => d.Id == deviceId && d.DeletedAt == null)
+                        .FirstOrDefaultAsync(cancellationToken);
 
-                    // Start tasks for new devices or restart if config changed
-                    foreach (var device in enabledDevices)
+                    if (device != null && device.IsEnabled)
                     {
-                        if (!_deviceTasks.ContainsKey(device.Id))
+                        // Stop existing task if any
+                        if (_deviceTasks.TryGetValue(deviceId, out var existingCts))
                         {
-                            _logger.LogInformation($"Starting polling for device: {device.Name} ({device.Id})");
-                            var cts = new CancellationTokenSource();
-                            _deviceTasks[device.Id] = cts;
-
-                            // Start device polling in background
-                            _ = Task.Run(() => PollDeviceAsync(device, cts.Token), stoppingToken);
+                            await existingCts.CancelAsync();
+                            _deviceTasks.Remove(deviceId);
                         }
+
+                        // Start new task
+                        await StartDevicePollingAsync(device, cancellationToken);
                     }
-
-                    // Stop tasks for disabled devices
-                    var deviceIdsToRemove = _deviceTasks.Keys
-                        .Where(id => !enabledDevices.Any(d => d.Id == id))
-                        .ToList();
-
-                    foreach (var deviceId in deviceIdsToRemove)
+                    else
                     {
-                        _logger.LogInformation($"Stopping polling for device: {deviceId}");
-                        await _deviceTasks[deviceId].CancelAsync();
-                        _deviceTasks.Remove(deviceId);
+                        // Device not found or disabled, remove it
+                        await RemoveDevicePollingAsync(deviceId);
                     }
-
-                    // Handle StorageFlows
-                    await ManageStorageFlowsAsync(dbContext, stoppingToken);
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogError(ex, "Error in DeviceWorkerService main loop");
+                    _logger.LogError(ex, $"Error refreshing device {deviceId}");
                 }
-
-                // Check for device changes every 10 seconds
-                await Task.Delay(TimeSpan.FromSeconds(10), stoppingToken);
             }
         }
 
-        private async Task ManageStorageFlowsAsync(AppDbContext dbContext, CancellationToken stoppingToken)
+        private async Task ListenToDeviceRemoveEventsAsync(CancellationToken cancellationToken)
         {
-            try
+            await foreach (var deviceId in _deviceRemoveChannel.Reader.ReadAllAsync(cancellationToken))
             {
-                // Get all active storage flows
-                var activeFlows = await dbContext.StorageFlows
-                    .Where(sf => sf.IsActive && sf.DeletedAt == null)
-                    .Include(sf => sf.MasterTable)
-                        .ThenInclude(mt => mt.Fields.Where(f => f.DeletedAt == null && f.IsEnabled))
-                    .Include(sf => sf.StorageFlowDevices)
-                        .ThenInclude(sfd => sfd.Device)
-                    .Include(sf => sf.StorageFlowMappings)
-                        .ThenInclude(sfm => sfm.MasterTableField)
-                    .Include(sf => sf.StorageFlowMappings)
-                        .ThenInclude(sfm => sfm.Tag)
-                    .ToListAsync(stoppingToken);
-
-                // Start tasks for new storage flows
-                foreach (var flow in activeFlows)
+                try
                 {
-                    if (!_storageFlowTasks.ContainsKey(flow.Id))
-                    {
-                        _logger.LogInformation($"Starting storage flow: {flow.Name} ({flow.Id})");
-                        var cts = new CancellationTokenSource();
-                        _storageFlowTasks[flow.Id] = cts;
-
-                        // Start storage flow in background
-                        _ = Task.Run(() => ExecuteStorageFlowAsync(flow, cts.Token), stoppingToken);
-                    }
+                    await RemoveDevicePollingAsync(deviceId);
                 }
-
-                // Stop tasks for inactive flows
-                var flowIdsToRemove = _storageFlowTasks.Keys
-                    .Where(id => !activeFlows.Any(f => f.Id == id))
-                    .ToList();
-
-                foreach (var flowId in flowIdsToRemove)
+                catch (Exception ex)
                 {
-                    _logger.LogInformation($"Stopping storage flow: {flowId}");
-                    await _storageFlowTasks[flowId].CancelAsync();
-                    _storageFlowTasks.Remove(flowId);
+                    _logger.LogError(ex, $"Error removing device {deviceId}");
                 }
             }
-            catch (Exception ex)
+        }
+
+        private async Task ListenToStorageFlowRefreshEventsAsync(CancellationToken cancellationToken)
+        {
+            await foreach (var flowId in _storageFlowRefreshChannel.Reader.ReadAllAsync(cancellationToken))
             {
-                _logger.LogError(ex, "Error managing storage flows");
+                try
+                {
+                    using var scope = _serviceProvider.CreateScope();
+                    var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+
+                    var flow = await dbContext.StorageFlows
+                        .Where(sf => sf.Id == flowId && sf.DeletedAt == null)
+                        .Include(sf => sf.MasterTable)
+                            .ThenInclude(mt => mt.Fields.Where(f => f.DeletedAt == null && f.IsEnabled))
+                        .Include(sf => sf.StorageFlowDevices)
+                            .ThenInclude(sfd => sfd.Device)
+                        .Include(sf => sf.StorageFlowMappings)
+                            .ThenInclude(sfm => sfm.MasterTableField)
+                        .Include(sf => sf.StorageFlowMappings)
+                            .ThenInclude(sfm => sfm.Tag)
+                        .FirstOrDefaultAsync(cancellationToken);
+
+                    if (flow != null && flow.IsActive)
+                    {
+                        // Stop existing task if any
+                        if (_storageFlowTasks.TryGetValue(flowId, out var existingCts))
+                        {
+                            await existingCts.CancelAsync();
+                            _storageFlowTasks.Remove(flowId);
+                        }
+
+                        // Start new task
+                        await StartStorageFlowAsync(flow, cancellationToken);
+                    }
+                    else
+                    {
+                        // Flow not found or inactive, remove it
+                        await RemoveStorageFlowAsync(flowId);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, $"Error refreshing storage flow {flowId}");
+                }
+            }
+        }
+
+        private async Task ListenToStorageFlowRemoveEventsAsync(CancellationToken cancellationToken)
+        {
+            await foreach (var flowId in _storageFlowRemoveChannel.Reader.ReadAllAsync(cancellationToken))
+            {
+                try
+                {
+                    await RemoveStorageFlowTaskAsync(flowId);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, $"Error removing storage flow {flowId}");
+                }
+            }
+        }
+
+        private async Task ListenToRefreshAllEventsAsync(CancellationToken cancellationToken)
+        {
+            await foreach (var _ in _refreshAllChannel.Reader.ReadAllAsync(cancellationToken))
+            {
+                try
+                {
+                    _logger.LogInformation("Refreshing all devices and storage flows...");
+                    await InitialLoadAsync(cancellationToken);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Error refreshing all");
+                }
+            }
+        }
+
+        private async Task StartDevicePollingAsync(Device device, CancellationToken stoppingToken)
+        {
+            _logger.LogInformation($"Starting polling for device: {device.Name} ({device.Id})");
+            var cts = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+            _deviceTasks[device.Id] = cts;
+
+            // Start device polling in background
+            _ = Task.Run(() => PollDeviceAsync(device, cts.Token), stoppingToken);
+        }
+
+        private async Task RemoveDevicePollingAsync(Guid deviceId)
+        {
+            if (_deviceTasks.TryGetValue(deviceId, out var cts))
+            {
+                _logger.LogInformation($"Stopping polling for device: {deviceId}");
+                await cts.CancelAsync();
+                _deviceTasks.Remove(deviceId);
+            }
+        }
+
+        private async Task StartStorageFlowAsync(StorageFlow flow, CancellationToken stoppingToken)
+        {
+            _logger.LogInformation($"Starting storage flow: {flow.Name} ({flow.Id})");
+            var cts = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+            _storageFlowTasks[flow.Id] = cts;
+
+            // Start storage flow in background
+            _ = Task.Run(() => ExecuteStorageFlowAsync(flow, cts.Token), stoppingToken);
+        }
+
+        private async Task RemoveStorageFlowTaskAsync(Guid flowId)
+        {
+            if (_storageFlowTasks.TryGetValue(flowId, out var cts))
+            {
+                _logger.LogInformation($"Stopping storage flow: {flowId}");
+                await cts.CancelAsync();
+                _storageFlowTasks.Remove(flowId);
+            }
+        }
+
+        private async Task LoadStorageFlowsAsync(AppDbContext dbContext, CancellationToken stoppingToken)
+        {
+            var activeFlows = await dbContext.StorageFlows
+                .Where(sf => sf.IsActive && sf.DeletedAt == null)
+                .Include(sf => sf.MasterTable)
+                    .ThenInclude(mt => mt.Fields.Where(f => f.DeletedAt == null && f.IsEnabled))
+                .Include(sf => sf.StorageFlowDevices)
+                    .ThenInclude(sfd => sfd.Device)
+                .Include(sf => sf.StorageFlowMappings)
+                    .ThenInclude(sfm => sfm.MasterTableField)
+                .Include(sf => sf.StorageFlowMappings)
+                    .ThenInclude(sfm => sfm.Tag)
+                .ToListAsync(stoppingToken);
+
+            foreach (var flow in activeFlows)
+            {
+                await StartStorageFlowAsync(flow, stoppingToken);
             }
         }
 
