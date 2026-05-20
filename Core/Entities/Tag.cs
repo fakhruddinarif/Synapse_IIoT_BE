@@ -121,7 +121,15 @@ namespace Core.Entities
 		public bool IsScalingValid()
 		{
 			const double epsilon = 0.001;
-			return !IsScaled || (Math.Abs(RawMax - RawMin) >= epsilon && Math.Abs(EuMax - EuMin) >= epsilon);
+
+			if (!IsScaled)
+				return true;
+
+			if (RawMin == null || RawMax == null || EuMin == null || EuMax == null)
+				return false;
+
+			return Math.Abs(RawMax.Value - RawMin.Value) >= epsilon
+				&& Math.Abs(EuMax.Value - EuMin.Value) >= epsilon;
 		}
 	}
 }
