@@ -239,64 +239,84 @@ namespace Infrastructure.Services
             };
         }
 
-        // Database table creation methods
+        // Database table creation methods — sintaks PostgreSQL.
+        //
+        // `field.Name` sekarang SELALU lewat SqlIdentifier.EnsureSafe di titik penyusunan SQL
+        // ini, sama seperti tableName satu baris di atasnya. Sebelumnya hanya nama tabel yang
+        // diperiksa di sini; nama kolom pengguna langsung disisipkan mentah ke DDL — jaring
+        // terakhir yang disebutkan di references/architecture.md ("EnsureSafe tepat di titik
+        // penyusunan SQL") ternyata bocor tepat di jalur ini.
         private async Task CreatePhysicalTableAsync(string tableName, IEnumerable<MasterTableFields> fields)
         {
+            var safeTable = SqlIdentifier.EnsureSafe(tableName, "tabel");
             var columnDefinitions = new List<string>();
 
-            // Add Id column (primary key)
-            columnDefinitions.Add("Id CHAR(36) PRIMARY KEY");
+            // uuid, bukan char(36): tipe native Postgres untuk GUID — dibandingkan sebagai nilai
+            // biner 128-bit, bukan string, dan itulah yang membuat index PRIMARY KEY di sini kecil
+            // dan cepat dibanding menyimpannya sebagai teks.
+            columnDefinitions.Add("id uuid PRIMARY KEY");
 
-            // Add fields
             foreach (var field in fields)
             {
-                var columnType = MapDataTypeToMySql(field.DataType);
-                columnDefinitions.Add($"`{field.Name}` {columnType} NULL"); // All fields nullable by default
+                var safeColumn = SqlIdentifier.EnsureSafe(field.Name, "kolom");
+                var columnType = MapDataTypeToSql(field.DataType);
+                columnDefinitions.Add($"\"{safeColumn}\" {columnType} NULL"); // All fields nullable by default
             }
 
-            // Add audit columns
-            columnDefinitions.Add("CreatedAt DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6)");
-            columnDefinitions.Add("UpdatedAt DATETIME(6) NULL");
-            columnDefinitions.Add("DeletedAt DATETIME(6) NULL");
+            // Audit columns memakai timestamptz: seluruh gateway menghasilkan waktu lewat
+            // DateTime.UtcNow, dan timestamp TANPA zona adalah jebakan Postgres yang diam-diam
+            // benar sampai ada yang menyambung dengan sesi non-UTC.
+            columnDefinitions.Add("created_at timestamptz(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6)");
+            columnDefinitions.Add("updated_at timestamptz(6) NULL");
+            columnDefinitions.Add("deleted_at timestamptz(6) NULL");
 
             var createTableSql = $@"
-                CREATE TABLE IF NOT EXISTS `{SqlIdentifier.EnsureSafe(tableName, "tabel")}` (
+                CREATE TABLE IF NOT EXISTS ""{safeTable}"" (
                     {string.Join(",\n                    ", columnDefinitions)}
-                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;";
+                );";
 
             await _dbContext.Database.ExecuteSqlRawAsync(createTableSql);
         }
 
         private async Task AddColumnToTableAsync(string tableName, MasterTableFields field)
         {
-            var columnType = MapDataTypeToMySql(field.DataType);
+            var safeTable = SqlIdentifier.EnsureSafe(tableName, "tabel");
+            var safeColumn = SqlIdentifier.EnsureSafe(field.Name, "kolom");
+            var columnType = MapDataTypeToSql(field.DataType);
             var alterTableSql = $@"
-                ALTER TABLE `{SqlIdentifier.EnsureSafe(tableName, "tabel")}` 
-                ADD COLUMN `{field.Name}` {columnType} NULL;";
+                ALTER TABLE ""{safeTable}""
+                ADD COLUMN ""{safeColumn}"" {columnType} NULL;";
 
             await _dbContext.Database.ExecuteSqlRawAsync(alterTableSql);
         }
 
         private async Task DropColumnFromTableAsync(string tableName, string fieldName)
         {
+            var safeTable = SqlIdentifier.EnsureSafe(tableName, "tabel");
+            var safeColumn = SqlIdentifier.EnsureSafe(fieldName, "kolom");
             var alterTableSql = $@"
-                ALTER TABLE `{SqlIdentifier.EnsureSafe(tableName, "tabel")}` 
-                DROP COLUMN `{fieldName}`;";
+                ALTER TABLE ""{safeTable}""
+                DROP COLUMN ""{safeColumn}"";";
 
             await _dbContext.Database.ExecuteSqlRawAsync(alterTableSql);
         }
 
-        private static string MapDataTypeToMySql(DataTypeTable dataType)
+        /// <summary>
+        /// Satu-satunya tempat DataTypeTable dipetakan ke tipe kolom SQL untuk tabel dinamis.
+        ///
+        /// Sebelumnya ada DUA implementasi paralel (satu di sini, satu lagi di
+        /// StorageFlowService) yang sudah saling menyimpang — satu memakai DATETIME(6), yang
+        /// lain DATETIME biasa. Disatukan di sini dan dipakai StorageFlowService juga, supaya
+        /// tabel yang dibuat lewat jalur mana pun punya tipe kolom yang identik.
+        /// </summary>
+        internal static string MapDataTypeToSql(DataTypeTable dataType) => dataType switch
         {
-            return dataType switch
-            {
-                DataTypeTable.STRING => "VARCHAR(255)",
-                DataTypeTable.INTEGER => "INT",
-                DataTypeTable.FLOAT => "DOUBLE",
-                DataTypeTable.BOOLEAN => "TINYINT(1)",
-                DataTypeTable.DATETIME => "DATETIME(6)",
-                _ => "VARCHAR(255)"
-            };
-        }
+            DataTypeTable.STRING => "varchar(255)",
+            DataTypeTable.INTEGER => "integer",
+            DataTypeTable.FLOAT => "double precision",
+            DataTypeTable.BOOLEAN => "boolean",
+            DataTypeTable.DATETIME => "timestamptz(6)",
+            _ => "varchar(255)"
+        };
     }
 }

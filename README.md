@@ -5,7 +5,7 @@ Backend API untuk sistem Industrial Internet of Things (IIoT) berbasis ASP.NET C
 ## Tech Stack
 
 - .NET 10 (ASP.NET Core Web API)
-- Entity Framework Core (MySQL)
+- Entity Framework Core (PostgreSQL 16 + TimescaleDB, lewat Npgsql)
 - SignalR (real-time streaming)
 - JWT Authentication (HTTP-only cookie)
 - Rate Limiting + Audit Logging Middleware
@@ -23,13 +23,14 @@ Backend API untuk sistem Industrial Internet of Things (IIoT) berbasis ASP.NET C
 ## Prerequisites
 
 - .NET 10 SDK
-- MySQL 8.0+
+- PostgreSQL 16+ dengan ekstensi TimescaleDB (lihat opsi Docker di bawah — jauh lebih mudah
+  daripada memasang keduanya manual)
 - Git
 - IDE: Visual Studio 2022 atau VS Code
 
 Opsional:
 
-- Docker + Docker Compose (untuk MySQL dan RabbitMQ lokal)
+- Docker + Docker Compose (untuk database lokal via image `timescale/timescaledb`)
 
 ## Quick Start
 
@@ -40,47 +41,41 @@ git clone https://github.com/fakhruddinarif/Synapse_IIoT_BE.git
 cd Synapse_IIoT_BE
 ```
 
-### 2. Jalankan Infrastruktur (Opsional, via Docker)
+### 2. Jalankan Database (via Docker)
 
 ```bash
-docker compose up -d
+cp .env.example .env
+# isi JWT_SECRET dan POSTGRES_PASSWORD di .env — lihat komentar di berkas itu untuk cara
+# menghasilkan nilainya
+docker compose up -d db
 ```
 
-Docker Compose menyediakan MySQL dan RabbitMQ. Pastikan connection string di konfigurasi aplikasi sesuai kredensial docker-compose.yml.
+Ini menyalakan PostgreSQL 16 + TimescaleDB (image `timescale/timescaledb`) sesuai kredensial
+di `.env`. `docker compose up -d` (tanpa `db`) menyalakan gateway dan UI sekalian lewat
+kontainer — lihat komentar di `docker-compose.yml` untuk detail tiap servis.
 
-### 3. Konfigurasi Aplikasi
+### 3. Konfigurasi Aplikasi (untuk `dotnet run` langsung di host)
 
-Edit Api/appsettings.json (atau appsettings.Development.json):
+`Api/appsettings.json` dan `appsettings.Development.json` **sengaja tidak memuat rahasia** —
+keduanya ikut masuk repositori, dan password/JWT secret yang ditulis langsung di sana akan
+ter-*commit*. Isi lewat `dotnet user-secrets` (tersimpan di luar repo), dengan password yang
+**sama** seperti `POSTGRES_PASSWORD` di `.env`:
 
-```json
-{
-  "ConnectionStrings": {
-    "DefaultConnection": "Server=localhost;Database=db_synapse_iiot;User=root;Password=YOUR_MYSQL_PASSWORD;"
-  },
-  "JwtSettings": {
-    "Secret": "CHANGE_THIS_TO_YOUR_OWN_SECRET_KEY_MIN_32_CHARS!",
-    "Issuer": "SynapseIIoT",
-    "Audience": "SynapseIIoT",
-    "ExpirationInMinutes": 60
-  },
-  "SignalRSettings": {
-    "EnableDetailedErrors": false,
-    "ClientTimeoutInterval": 60,
-    "KeepAliveInterval": 30
-  },
-  "FileUploadSettings": {
-    "UploadPath": "wwwroot/uploads",
-    "BaseUrl": "http://localhost:5009",
-    "MaxFileSizeInBytes": "10485760"
-  }
-}
+```bash
+dotnet user-secrets set "JwtSettings:Secret" "<samakan dengan JWT_SECRET di .env>" --project Api
+dotnet user-secrets set "ConnectionStrings:DefaultConnection" \
+  "Host=127.0.0.1;Port=5432;Database=db_synapse_iiot;Username=synapse_user;Password=<samakan dengan POSTGRES_PASSWORD di .env>;" \
+  --project Api
 ```
 
 Catatan:
 
-- DefaultConnection wajib mengarah ke database MySQL.
-- JwtSettings.Secret minimal 32 karakter.
-- FileUploadSettings.BaseUrl sebaiknya sama dengan host API yang berjalan.
+- `Host`/`Username` adalah kata kunci Npgsql — MySQL memakai `Server`/`User`, Npgsql tidak
+  mengenalnya.
+- Startup menolak menyala bila salah satu rahasia kosong, terlalu pendek, atau masih bernilai
+  contoh — pesannya menyebutkan persis kunci mana yang bermasalah.
+- Lihat `references/security.md` §3 untuk penjelasan lengkap kenapa `.env` (untuk kontainer)
+  dan `user-secrets` (untuk proses host) harus memakai nilai yang sama.
 
 ### 4. Restore Dependencies
 
@@ -183,28 +178,30 @@ Tabel yang didefinisikan di AppDbContext beserta field utama dan kegunaannya.
 
 | Table               | Fields (type)                                                                                                                                                                                                                                                                                                                                                                                          | Kegunaan                                                            |
 | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------- |
-| Users               | Id (Guid), Username (varchar(100)), PasswordHash (varchar(255)), Role (varchar(50) enum), CreatedAt (datetime), UpdatedAt (datetime?), DeletedAt (datetime?)                                                                                                                                                                                                                                           | Data akun dan peran pengguna (soft delete).                         |
-| Devices             | Id (Guid), Name (varchar(100)), Description (varchar(255)?), IsEnabled (bool), Protocol (varchar(50) enum), ConnectionConfigJson (json), PollingInterval (int), CreatedAt (datetime), UpdatedAt (datetime?), DeletedAt (datetime?)                                                                                                                                                                     | Master data device dan konfigurasi koneksi dalam JSON.              |
-| Tags                | Id (Guid), DeviceId (Guid), Name (varchar(100)), Address (varchar(100)), DataType (varchar(50) enum), AccessMode (varchar(50) enum), IsScaled (bool), RawMin/RawMax/EuMin/EuMax (double?), Unit (varchar(20)), CurrentRawValue/CurrentEngValue (double?), ValueUpdatedAt (datetime?), IsActive (bool), OpcUaNodeId (varchar(100)?), CreatedAt (datetime), UpdatedAt (datetime?), DeletedAt (datetime?) | Mapping alamat/tag sensor, scaling nilai, dan cache nilai terakhir. |
-| MasterTables        | Id (Guid), Name (varchar(200)), TableName (varchar(255)), Description (varchar(255)?), IsActive (bool), CreatedAt (datetime), UpdatedAt (datetime?), DeletedAt (datetime?)                                                                                                                                                                                                                             | Definisi tabel dinamis untuk penyimpanan data hasil mapping.        |
-| MasterTableFields   | Id (Guid), MasterTableId (Guid), Name (varchar(255)), DataType (varchar(50) enum), IsEnabled (bool), CreatedAt (datetime), UpdatedAt (datetime?), DeletedAt (datetime?)                                                                                                                                                                                                                                | Definisi kolom untuk MasterTable.                                   |
-| StorageFlows        | Id (Guid), Name (varchar(100)), Description (varchar(255)?), IsActive (bool), StorageInterval (int), MasterTableId (Guid), CreatedAt (datetime), UpdatedAt (datetime?), DeletedAt (datetime?)                                                                                                                                                                                                          | Aturan alur penyimpanan data ke MasterTable.                        |
-| StorageFlowDevices  | Id (Guid), StorageFlowId (Guid), DeviceId (Guid), CreatedAt (datetime)                                                                                                                                                                                                                                                                                                                                 | Relasi banyak-ke-banyak StorageFlow dan Device.                     |
-| StorageFlowMappings | Id (Guid), StorageFlowId (Guid), MasterTableFieldId (Guid), SourcePath (varchar(500)), TagId (Guid?), CreatedAt (datetime), UpdatedAt (datetime?)                                                                                                                                                                                                                                                      | Mapping sumber data ke field target (JSONPath atau Tag).            |
-| FileMetadata        | Id (Guid), FileName (varchar(255)), OriginalFileName (varchar(255)), FilePath (varchar(500)), FileSize (bigint), ContentType (varchar(100)), EntityType (varchar(50)), EntityId (Guid?), FieldName (varchar(100)), UploadedAt (datetime), DeletedAt (datetime?)                                                                                                                                        | Metadata file upload untuk entity tertentu.                         |
-| AuditLogs           | Id (Guid), UserId (Guid?), Action (varchar(50)), EntityType (varchar(50)), EntityId (Guid?), OldValues (json?), NewValues (json?), IpAddress (varchar(45)?), UserAgent (varchar(500)?), Status (enum/int), ErrorMessage (varchar(500)?), CreatedAt (datetime)                                                                                                                                          | Catatan audit perubahan data dan aktivitas pengguna.                |
+| Users               | Id (Guid), Username (varchar(100)), PasswordHash (varchar(255)), Role (varchar(50) enum), CreatedAt (timestamptz), UpdatedAt (timestamptz?), DeletedAt (timestamptz?)                                                                                                                                                                                                                                           | Data akun dan peran pengguna (soft delete).                         |
+| Devices             | Id (Guid), Name (varchar(100)), Description (varchar(255)?), IsEnabled (bool), Protocol (varchar(50) enum), ConnectionConfigJson (jsonb), PollingInterval (int), CreatedAt (timestamptz), UpdatedAt (timestamptz?), DeletedAt (timestamptz?)                                                                                                                                                                     | Master data device dan konfigurasi koneksi dalam JSON.              |
+| Tags                | Id (Guid), DeviceId (Guid), Name (varchar(100)), Address (varchar(100)), DataType (varchar(50) enum), AccessMode (varchar(50) enum), IsScaled (bool), RawMin/RawMax/EuMin/EuMax (double?), Unit (varchar(20)), CurrentRawValue/CurrentEngValue (double?), ValueUpdatedAt (timestamptz?), IsActive (bool), OpcUaNodeId (varchar(100)?), CreatedAt (timestamptz), UpdatedAt (timestamptz?), DeletedAt (timestamptz?) | Mapping alamat/tag sensor, scaling nilai, dan cache nilai terakhir. |
+| MasterTables        | Id (Guid), Name (varchar(200)), TableName (varchar(255)), Description (varchar(255)?), IsActive (bool), CreatedAt (timestamptz), UpdatedAt (timestamptz?), DeletedAt (timestamptz?)                                                                                                                                                                                                                             | Definisi tabel dinamis untuk penyimpanan data hasil mapping.        |
+| MasterTableFields   | Id (Guid), MasterTableId (Guid), Name (varchar(255)), DataType (varchar(50) enum), IsEnabled (bool), CreatedAt (timestamptz), UpdatedAt (timestamptz?), DeletedAt (timestamptz?)                                                                                                                                                                                                                                | Definisi kolom untuk MasterTable.                                   |
+| StorageFlows        | Id (Guid), Name (varchar(100)), Description (varchar(255)?), IsActive (bool), StorageInterval (int), MasterTableId (Guid), CreatedAt (timestamptz), UpdatedAt (timestamptz?), DeletedAt (timestamptz?)                                                                                                                                                                                                          | Aturan alur penyimpanan data ke MasterTable.                        |
+| StorageFlowDevices  | Id (Guid), StorageFlowId (Guid), DeviceId (Guid), CreatedAt (timestamptz)                                                                                                                                                                                                                                                                                                                                 | Relasi banyak-ke-banyak StorageFlow dan Device.                     |
+| StorageFlowMappings | Id (Guid), StorageFlowId (Guid), MasterTableFieldId (Guid), SourcePath (varchar(500)), TagId (Guid?), CreatedAt (timestamptz), UpdatedAt (timestamptz?)                                                                                                                                                                                                                                                      | Mapping sumber data ke field target (JSONPath atau Tag).            |
+| FileMetadata        | Id (Guid), FileName (varchar(255)), OriginalFileName (varchar(255)), FilePath (varchar(500)), FileSize (bigint), ContentType (varchar(100)), EntityType (varchar(50)), EntityId (Guid?), FieldName (varchar(100)), UploadedAt (timestamptz), DeletedAt (timestamptz?)                                                                                                                                        | Metadata file upload untuk entity tertentu.                         |
+| AuditLogs           | Id (Guid), UserId (Guid?), Action (varchar(50)), EntityType (varchar(50)), EntityId (Guid?), OldValues (jsonb?), NewValues (jsonb?), IpAddress (varchar(45)?), UserAgent (varchar(500)?), Status (enum/int), ErrorMessage (varchar(500)?), CreatedAt (timestamptz)                                                                                                                                          | Catatan audit perubahan data dan aktivitas pengguna.                |
 
 ## Troubleshooting
 
 ### Database Connection Error
 
-Error: Unable to connect to any of the specified MySQL hosts
+Error: `Connection refused` atau `password authentication failed for user "synapse_user"`
 
 Solusi:
 
-- Pastikan MySQL Server sudah berjalan
-- Cek connection string di appsettings.json
-- Cek username dan password MySQL
+- Pastikan kontainer database berjalan: `docker compose ps db` (harus `healthy`)
+- Cek `dotnet user-secrets list --project Api` — password di sana harus **sama persis**
+  dengan `POSTGRES_PASSWORD` di `.env`
+- Error "belum diisi" pada `JwtSettings:Secret` atau `ConnectionStrings:DefaultConnection`
+  berarti langkah `dotnet user-secrets set` di atas belum dijalankan sama sekali
 
 ### Migration Error
 

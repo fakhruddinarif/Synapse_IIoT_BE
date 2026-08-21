@@ -4,6 +4,7 @@ using Core.Entities;
 using Core.Enums;
 using Core.Exceptions;
 using Core.Interface;
+using Core.Security;
 using Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
 using Newtonsoft.Json.Linq;
@@ -334,7 +335,7 @@ namespace Infrastructure.Services
 
         private async Task CreatePhysicalTableAsync(MasterTable masterTable)
         {
-            var tableName = masterTable.TableName;
+            var safeTable = SqlIdentifier.EnsureSafe(masterTable.TableName, "tabel");
             var fields = masterTable.Fields.Where(f => f.DeletedAt == null).ToList();
 
             if (!fields.Any())
@@ -342,10 +343,20 @@ namespace Infrastructure.Services
                 return;
             }
 
-            // Check if table already exists
-            var checkTableSql = "SELECT COUNT(*) as Value FROM information_schema.tables WHERE table_name = {0}";
+            // Dibatasi ke schema public secara eksplisit. MySQL information_schema.tables
+            // otomatis terbatas ke koneksi database aktif; di Postgres tabel dari schema lain
+            // (mis. milik ekstensi) ikut muncul kalau tidak difilter, dan itu bisa memberi
+            // "tabel sudah ada" yang keliru untuk nama yang kebetulan sama di schema lain.
+            // Alias "Value" WAJIB dikutip. SqlQueryRaw<int> membungkus kueri ini menjadi
+            // `SELECT s."Value" FROM (<kueri ini>) AS s` dengan "Value" berhuruf besar dan
+            // dikutip. Postgres melipat identifier tak terkutip ke huruf kecil, jadi alias
+            // `as Value` menghasilkan kolom bernama `value` — dan pembungkus EF gagal dengan
+            // "column s.Value does not exist". MySQL tidak case-sensitive di sini, jadi bug
+            // ini tidak pernah muncul sebelum berpindah provider.
+            var checkTableSql = "SELECT COUNT(*) as \"Value\" FROM information_schema.tables " +
+                "WHERE table_schema = 'public' AND table_name = {0}";
             var tableExists = await _context.Database
-                .SqlQueryRaw<int>(checkTableSql, tableName)
+                .SqlQueryRaw<int>(checkTableSql, safeTable)
                 .FirstOrDefaultAsync();
 
             if (tableExists > 0)
@@ -353,35 +364,27 @@ namespace Infrastructure.Services
                 return; // Table already exists
             }
 
-            // Build CREATE TABLE SQL
+            // uuid dan timestamptz, bukan char(36)/datetime — lihat catatan lengkap di
+            // MasterTableService.CreatePhysicalTableAsync, yang membangun tabel dengan bentuk
+            // identik. Pemetaan tipe (MapDataTypeToSql) sengaja dipakai bersama dari sana supaya
+            // kedua jalur pembuatan tabel dinamis ini tidak lagi diam-diam menyimpang satu sama
+            // lain seperti sebelumnya.
             var columnDefinitions = new List<string>
             {
-                "`Id` CHAR(36) PRIMARY KEY",
-                "`CreatedAt` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP"
+                "id uuid PRIMARY KEY",
+                "created_at timestamptz(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6)"
             };
 
             foreach (var field in fields)
             {
-                var sqlType = MapDataTypeToSql(field.DataType);
-                columnDefinitions.Add($"`{field.Name}` {sqlType}");
+                var safeColumn = SqlIdentifier.EnsureSafe(field.Name, "kolom");
+                var sqlType = MasterTableService.MapDataTypeToSql(field.DataType);
+                columnDefinitions.Add($"\"{safeColumn}\" {sqlType}");
             }
 
-            var createTableSql = $"CREATE TABLE `{tableName}` ({string.Join(", ", columnDefinitions)})";
+            var createTableSql = $"CREATE TABLE \"{safeTable}\" ({string.Join(", ", columnDefinitions)})";
 
             await _context.Database.ExecuteSqlRawAsync(createTableSql);
-        }
-
-        private static string MapDataTypeToSql(DataTypeTable dataType)
-        {
-            return dataType switch
-            {
-                DataTypeTable.STRING => "VARCHAR(255)",
-                DataTypeTable.INTEGER => "INT",
-                DataTypeTable.FLOAT => "DOUBLE",
-                DataTypeTable.BOOLEAN => "BOOLEAN",
-                DataTypeTable.DATETIME => "DATETIME",
-                _ => "VARCHAR(255)"
-            };
         }
 
         private async Task<List<DiscoveredFieldDto>> DiscoverHttpMqttFieldsAsync(Device device)

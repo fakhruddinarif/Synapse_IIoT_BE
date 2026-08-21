@@ -1,5 +1,4 @@
 using System.ComponentModel.DataAnnotations;
-using System.ComponentModel.DataAnnotations.Schema;
 
 namespace Core.Entities
 {
@@ -11,13 +10,18 @@ namespace Core.Entities
 	/// baris per hari. Karena itu tidak ada satu pun kolom di sini yang boleh sekadar "berguna" —
 	/// nama tag, satuan, dan deskripsi tinggal di tabel <see cref="Tag"/> dan digabungkan saat
 	/// dibaca, bukan diulang 172 juta kali.
+	///
+	/// TIDAK PUNYA KOLOM <c>Id</c> TERSENDIRI — kuncinya adalah <c>(TagId, SourceTs)</c>. Ini
+	/// bukan penghematan kosmetik: TimescaleDB mensyaratkan setiap UNIQUE/PRIMARY KEY pada
+	/// hypertable memuat kolom partisinya (<c>SourceTs</c>), dan surrogate key <c>Id</c> yang
+	/// berdiri sendiri sebagai PK akan ditolak oleh <c>create_hypertable()</c>. Karena kunci
+	/// idempotensi yang sudah dibutuhkan sistem ini justru <c>(TagId, SourceTs)</c>,
+	/// mempromosikannya menjadi PK menghapus kebutuhan kolom identity sekaligus menghindari
+	/// batasan itu — bukan menambah satu lagi kolom yang harus dijaga konsisten dengan indeks
+	/// unik yang sudah ada.
 	/// </summary>
 	public class TagHistory
 	{
-		[Key]
-		[DatabaseGenerated(DatabaseGeneratedOption.Identity)]
-		public long Id { get; set; }
-
 		[Required]
 		public Guid TagId { get; set; }
 

@@ -659,19 +659,28 @@ belum bisa disimpulkan.
 
 ## 10. Perombakan database
 
-Disetujui. Ini biaya satu kali yang paling murah dilakukan sekarang karena belum ada data produksi.
+**Selesai dan diverifikasi** (21 Agustus 2026) terhadap kontainer `timescale/timescaledb`
+sungguhan — bukan hanya kode yang ditulis, tapi benar-benar dijalankan: migrasi diterapkan,
+CRUD lewat EF, insert idempoten, baca historian, DDL tabel dinamis, hypertable + compression
+policy semuanya dicoba nyata.
 
-| Langkah | Isi | Risiko |
+| Langkah | Isi | Status |
 |---|---|---|
-| 1 | Ganti provider EF Core: `MySql.EntityFrameworkCore` → `Npgsql.EntityFrameworkCore.PostgreSQL` | Rendah — kode repository tidak berubah |
-| 2 | Hapus migrasi lama, buat ulang dari nol dengan skema §4 | Rendah — tidak ada data yang perlu dipertahankan |
-| 3 | Tulis ulang pembuatan tabel dinamis dengan kuoting `"nama"` + tipe Postgres | Sedang — menyentuh `MasterTableService`; sekalian menghapus interpolasi string SQL |
-| 4 | Aktifkan ekstensi TimescaleDB, jadikan `tag_history` hypertable | Rendah — satu perintah SQL di migrasi |
-| 5 | Pasang kebijakan kompresi, rollup (CAGG), retensi | Rendah |
-| 6 | `docker-compose.yml`: MySQL → `timescale/timescaledb:latest-pg16` | Rendah |
+| 1 | Ganti provider EF Core: `MySql.EntityFrameworkCore` → `Npgsql.EntityFrameworkCore.PostgreSQL` | **Selesai** |
+| 2 | Hapus migrasi lama, buat ulang dari nol dengan skema §4 | **Selesai** — `InitialCreatePostgres`, diterapkan ke database sungguhan |
+| 3 | Tulis ulang pembuatan tabel dinamis dengan kuoting `"nama"` + tipe Postgres | **Selesai** — `MasterTableService`, `StorageFlowService`, dan jalur `INSERT` di `DeviceWorkerService` (interpolasi string SQL sekaligus dihapus, lihat `references/security.md` T2) |
+| 4 | Aktifkan ekstensi TimescaleDB, jadikan `TagHistories` hypertable | **Selesai** — `TagHistories` tidak lagi punya `Id` surrogate; kuncinya `(TagId, SourceTs)` langsung, sekaligus memenuhi syarat Timescale bahwa PK hypertable wajib memuat kolom partisi |
+| 5 | Pasang kebijakan kompresi, rollup (CAGG), retensi | **Sebagian** — kompresi otomatis untuk chunk >7 hari aktif (aman, tidak destruktif). Rollup (CAGG) dan retensi (penghapusan otomatis) **belum** dipasang dengan sengaja: retensi bersifat destruktif dan menunggu jawaban §11 Q2 (tag mana yang butuh data mentah >90 hari) |
+| 6 | `docker-compose.yml`: MySQL → `timescale/timescaledb:latest-pg16` | **Selesai** |
 
 Yang **tidak** berubah: seluruh frontend (kontraknya API, bukan database), struktur envelope
 `ApiResponse`, dan pola cookie autentikasi.
+
+Dua bug ditemukan justru karena diuji terhadap database sungguhan (sebelumnya tidak mungkin
+terlihat): `TagHistoryWriter` memakai `DBNull.Value` yang ditolak `ExecuteSqlRawAsync` EF Core
+(diperbaiki ke `null` C# biasa), dan `StorageFlowService` memakai alias SQL tak terkutip
+(`as Value`) yang dilipat huruf kecil oleh Postgres sehingga pembungkus kueri EF gagal
+(diperbaiki dengan mengutip alias). Detail lengkap di `references/architecture.md`.
 
 ---
 

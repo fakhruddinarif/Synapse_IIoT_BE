@@ -120,7 +120,7 @@ if (string.IsNullOrWhiteSpace(connectionString))
 		"disimpan di appsettings.json yang ikut masuk repositori.");
 }
 builder.Services.AddDbContext<AppDbContext>(options =>
-	options.UseMySQL(connectionString));
+	options.UseNpgsql(connectionString, npgsql => npgsql.EnableRetryOnFailure(3)));
 
 // Register Repositories
 builder.Services.AddScoped<IUserRepository, UserRepository>();

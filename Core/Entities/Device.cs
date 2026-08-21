@@ -25,7 +25,7 @@ namespace Core.Entities
 
 		public Protocol Protocol { get; set; } = Protocol.HTTP;
 
-		[Column(TypeName = "json")]
+		[Column(TypeName = "jsonb")]
 		public string ConnectionConfigJson { get; set; } = "{}";
 
 		public int PollingInterval { get; set; } = 1000; // Polling interval in milliseconds

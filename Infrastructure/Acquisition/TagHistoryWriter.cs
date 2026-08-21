@@ -63,11 +63,11 @@ namespace Infrastructure.Acquisition
 		/// Menyusun satu INSERT multi-baris yang idempoten. Perbedaan dialek dibatasi pada klausa
 		/// terakhir saja, supaya perpindahan ke PostgreSQL tidak menyentuh apa pun selain ini.
 		/// </summary>
-		private static (string Sql, object[] Parameters) BuildInsert(IReadOnlyList<TagSample> samples, bool isPostgres)
+		private static (string Sql, object?[] Parameters) BuildInsert(IReadOnlyList<TagSample> samples, bool isPostgres)
 		{
 			var quote = isPostgres ? "\"" : "`";
 			var sb = new StringBuilder(samples.Count * 64);
-			var parameters = new object[samples.Count * ColumnsPerRow];
+			var parameters = new object?[samples.Count * ColumnsPerRow];
 
 			sb.Append("INSERT INTO ").Append(quote).Append("TagHistories").Append(quote).Append(" (")
 				.Append(Col(quote, "TagId")).Append(", ")
@@ -96,14 +96,26 @@ namespace Infrastructure.Acquisition
 				}
 				sb.Append(')');
 
+				// C# `null`, TIDAK PERNAH `DBNull.Value`.
+				//
+				// Ini bukan gaya penulisan — ExecuteSqlRawAsync milik EF Core menerima array
+				// `object?[]` dan mencoba mencari *store type mapping* untuk TIPE CLR setiap
+				// nilai yang bukan null; `DBNull.Value` adalah instance sungguhan bertipe
+				// `System.DBNull`, dan tidak ada provider yang memetakan tipe itu — hasilnya
+				// exception "doesn't have a store type mapping for properties of type 'DBNull'"
+				// pada SETIAP baris yang punya kolom nullable kosong. `null` C# biasa (boxing
+				// dari `Nullable<T>` tanpa nilai otomatis menghasilkan referensi null, bukan
+				// instance) ditangani EF Core sebagai kasus khusus sebelum pencarian tipe itu
+				// terjadi sama sekali. Ini baru ketahuan setelah dijalankan terhadap PostgreSQL
+				// sungguhan — jalur ini belum pernah tersentuh database nyata sebelumnya.
 				parameters[b + 0] = s.TagId;
 				parameters[b + 1] = s.DeviceId;
 				parameters[b + 2] = s.SourceTs;
 				parameters[b + 3] = s.GatewayTs;
-				parameters[b + 4] = (object?)s.Numeric ?? DBNull.Value;
-				parameters[b + 5] = (object?)s.Boolean ?? DBNull.Value;
+				parameters[b + 4] = s.Numeric;
+				parameters[b + 5] = s.Boolean;
 				parameters[b + 6] = Truncate(s.Text, 500);
-				parameters[b + 7] = (object?)s.Raw ?? DBNull.Value;
+				parameters[b + 7] = s.Raw;
 				parameters[b + 8] = (byte)s.Quality;
 				parameters[b + 9] = Truncate(s.Note, 255);
 			}
@@ -120,9 +132,9 @@ namespace Infrastructure.Acquisition
 
 		private static string Col(string quote, string name) => quote + name + quote;
 
-		private static object Truncate(string? value, int max)
+		private static string? Truncate(string? value, int max)
 		{
-			if (string.IsNullOrEmpty(value)) return DBNull.Value;
+			if (string.IsNullOrEmpty(value)) return null;
 
 			// Dipotong, bukan ditolak: nilai teks yang kepanjangan dari perangkat tidak boleh
 			// menggagalkan seluruh batch berisi 499 sampel lain yang sehat.

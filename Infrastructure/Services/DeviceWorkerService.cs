@@ -4,6 +4,7 @@ using Core.Entities;
 using Core.Enums;
 using Core.Acquisition;
 using Core.Interface;
+using Core.Security;
 using Infrastructure.Data;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.DependencyInjection;
@@ -554,46 +555,50 @@ namespace Infrastructure.Services
             return mappedData;
         }
 
+        /// <summary>
+        /// Menulis satu baris ke tabel dinamis, SELALU dengan parameter — tidak pernah dengan
+        /// nilai yang dirangkai ke dalam teks SQL.
+        ///
+        /// Sebelumnya nilai dari perangkat (termasuk teks bebas dari payload HTTP) dirangkai
+        /// langsung menjadi literal SQL lewat `FormatValueForSql`, dengan eskapnya ditulis
+        /// tangan (`Replace("'", "''")`) untuk setiap tipe. Itu jalur injeksi yang nyata: nama
+        /// kolom berasal dari tabel yang pengguna definisikan sendiri, tapi ISI baris berasal
+        /// dari perangkat di lapangan — dan perangkat yang disusupi atau firmware yang ngawur
+        /// bisa mengirim apa saja. Nama kolom (dan nama tabel) tetap tidak bisa diparameterkan
+        /// oleh SQL apa pun, jadi keduanya melewati <see cref="SqlIdentifier.EnsureSafe"/> tepat
+        /// di titik ini; nilai barisnya sepenuhnya lewat parameter, memakai mekanisme placeholder
+        /// <c>{0}</c> yang sama seperti kueri lain di codebase ini (lihat
+        /// <c>StorageFlowService.CreatePhysicalTableAsync</c>).
+        /// </summary>
         private async Task InsertDataIntoTableAsync(string tableName, Dictionary<string, object> data, AppDbContext dbContext)
         {
             if (data.Count == 0) return;
 
             try
             {
-                // Build INSERT statement
-                var columns = new List<string> { "`Id`", "`CreatedAt`" };
-                var values = new List<string> { $"'{Guid.NewGuid()}'", "NOW()" };
+                var safeTable = SqlIdentifier.EnsureSafe(tableName, "tabel");
+                var columns = new List<string> { "\"id\"", "\"created_at\"" };
+                var placeholders = new List<string> { "{0}", "{1}" };
+                var parameters = new List<object> { Guid.NewGuid(), DateTime.UtcNow };
 
-                foreach (var kvp in data)
+                foreach (var (key, value) in data)
                 {
-                    columns.Add($"`{kvp.Key}`");
-                    values.Add(FormatValueForSql(kvp.Value));
+                    var safeColumn = SqlIdentifier.EnsureSafe(key, "kolom");
+                    columns.Add($"\"{safeColumn}\"");
+                    placeholders.Add($"{{{parameters.Count}}}");
+                    parameters.Add(value ?? DBNull.Value);
                 }
 
-                var insertSql = $"INSERT INTO `{tableName}` ({string.Join(", ", columns)}) VALUES ({string.Join(", ", values)})";
+                var insertSql =
+                    $"INSERT INTO \"{safeTable}\" ({string.Join(", ", columns)}) VALUES ({string.Join(", ", placeholders)})";
 
-                await dbContext.Database.ExecuteSqlRawAsync(insertSql);
+                await dbContext.Database.ExecuteSqlRawAsync(insertSql, parameters.ToArray());
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, $"Error inserting data into table {tableName}");
                 throw;
             }
-        }
-
-        private static string FormatValueForSql(object value)
-        {
-            if (value == null) return "NULL";
-
-            return value switch
-            {
-                string s => $"'{s.Replace("'", "''")}'" ,
-                bool b => b ? "1" : "0",
-                DateTime dt => $"'{dt:yyyy-MM-dd HH:mm:ss}'",
-                int or long or short or byte => value.ToString()!,
-                float or double or decimal => value.ToString()!.Replace(",", "."),
-                _ => $"'{value.ToString()!.Replace("'", "''")}'"
-            };
         }
 
         public override async Task StopAsync(CancellationToken cancellationToken)

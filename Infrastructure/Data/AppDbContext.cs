@@ -53,7 +53,7 @@ namespace Infrastructure.Data
 					.HasConversion<string>()
 					.HasColumnType(VARCHAR_50)
 					.HasDefaultValue(Protocol.HTTP);
-				entity.Property(e => e.ConnectionConfigJson).HasColumnType("json").IsRequired();
+				entity.Property(e => e.ConnectionConfigJson).HasColumnType("jsonb").IsRequired();
 				entity.Property(e => e.PollingInterval).HasDefaultValue(1000);
 			});
 
@@ -83,25 +83,37 @@ namespace Infrastructure.Data
 
 			modelBuilder.Entity<TagHistory>(entity =>
 			{
-				entity.HasKey(e => e.Id);
-				entity.Property(e => e.TagId).IsRequired();
+				// PK majemuk, bukan Id surrogate: lihat catatan di kelas TagHistory. Ini SEKALIGUS
+				// kunci idempotensi (batch yang sama boleh datang dua kali setelah proses mati di
+				// antara "historian menerima" dan "WAL dikomit") dan syarat TimescaleDB (PK sebuah
+				// hypertable wajib memuat kolom partisinya, SourceTs).
+				entity.HasKey(e => new { e.TagId, e.SourceTs });
+
 				entity.Property(e => e.DeviceId).IsRequired();
 
-				// datetime(6) — presisi mikrodetik, dan ini BUKAN detail kosmetik. Baku MySQL
-				// adalah datetime tanpa pecahan detik, yang membulatkan waktu ke detik terdekat;
-				// pada scan 500 ms itu berarti dua sampel berbeda punya SourceTs identik, dan
-				// indeks unik di bawah ini akan MENGGABUNGKAN keduanya menjadi satu baris.
-				// Perlindungan terhadap duplikat berubah menjadi penyebab kehilangan data.
-				entity.Property(e => e.SourceTs).HasColumnType("datetime(6)").IsRequired();
-				entity.Property(e => e.GatewayTs).HasColumnType("datetime(6)").IsRequired();
+				// timestamptz(6) — presisi mikrodetik DAN sadar zona waktu. Presisinya bukan
+				// detail kosmetik: baku Postgres tanpa argumen membulatkan ke mikrodetik penuh
+				// tapi tanpa masalah; yang krusial adalah presisi eksplisit tetap konsisten lintas
+				// migrasi. Pada scan 500 ms, dua sampel berbeda tanpa presisi ini bisa mendapat
+				// SourceTs yang secara efektif identik, dan PK di atas akan MENGGABUNGKAN
+				// keduanya menjadi satu baris — perlindungan terhadap duplikat berubah menjadi
+				// penyebab kehilangan data. `timestamptz` (bukan `timestamp` tanpa zona) dipilih
+				// karena seluruh sistem ini menghasilkan waktu lewat `DateTime.UtcNow`; menyimpannya
+				// tanpa zona adalah jebakan klasik Postgres yang diam-diam benar sampai suatu hari
+				// ada yang menyambung dengan sesi non-UTC.
+				entity.Property(e => e.SourceTs).HasColumnType("timestamptz(6)").IsRequired();
+				entity.Property(e => e.GatewayTs).HasColumnType("timestamptz(6)").IsRequired();
 
-				entity.Property(e => e.TextValue).HasMaxLength(500);
-				entity.Property(e => e.Note).HasMaxLength(255);
+				// `text`, bukan `varchar(n)` — TimescaleDB sendiri menyarankan ini untuk kolom pada
+				// hypertable yang akan dikompresi (compress_orderby/segmentby bekerja pada blok
+				// kolom, dan varchar(n) tidak memberi keuntungan apa pun di Postgres dibanding text;
+				// batas panjang tetap dijaga di lapisan aplikasi oleh TagHistoryWriter.Truncate).
+				entity.Property(e => e.TextValue).HasColumnType("text");
+				entity.Property(e => e.Note).HasColumnType("text");
 
-				// Kunci idempotensi. Historian ditulis ulang untuk batch yang sama setiap kali
-				// proses mati setelah menulis tetapi sebelum mengomit WAL; indeks inilah yang
-				// membuat pengulangan itu tidak menghasilkan baris ganda.
-				entity.HasIndex(e => new { e.TagId, e.SourceTs }).IsUnique();
+				// Postgres tidak punya tipe unsigned; quality hanya berisi 0-3 jadi smallint lebih
+				// dari cukup dan tetap menolak nilai negatif yang tidak berarti apa pun di sini.
+				entity.Property(e => e.Quality).HasColumnType("smallint");
 
 				// Jalur kueri operasional: satu perangkat, satu rentang waktu.
 				entity.HasIndex(e => new { e.DeviceId, e.SourceTs });

@@ -39,14 +39,14 @@ namespace Core.Entities
 		/// JSON serialized old values before update
 		/// Only populated for UPDATE actions
 		/// </summary>
-		[Column(TypeName = "json")]
+		[Column(TypeName = "jsonb")]
 		public string? OldValues { get; set; }
 
 		/// <summary>
 		/// JSON serialized new values after update
 		/// Only populated for UPDATE and CREATE actions
 		/// </summary>
-		[Column(TypeName = "json")]
+		[Column(TypeName = "jsonb")]
 		public string? NewValues { get; set; }
 
 		/// <summary>
