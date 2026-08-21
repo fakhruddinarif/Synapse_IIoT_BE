@@ -1,4 +1,5 @@
 using Core.DTOs.Device;
+using Core.DTOs;
 using Core.Interface;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -30,7 +31,7 @@ namespace Api.Controllers
 			}
 			catch (Exception ex)
 			{
-				return StatusCode(500, new { status = 500, message = "An error occurred while retrieving devices", error = ex.Message });
+				return StatusCode(500, ApiResponse<object>.Fail(500, "Gagal mengambil daftar perangkat"));
 			}
 		}
 
@@ -48,7 +49,7 @@ namespace Api.Controllers
 			}
 			catch (Exception ex)
 			{
-				return StatusCode(500, new { status = 500, message = "An error occurred while retrieving device", error = ex.Message });
+				return StatusCode(500, ApiResponse<object>.Fail(500, "Gagal mengambil data perangkat"));
 			}
 		}
 
@@ -71,7 +72,7 @@ namespace Api.Controllers
 			}
 			catch (Exception ex)
 			{
-				return StatusCode(500, new { status = 500, message = "An error occurred while creating device", error = ex.Message });
+				return StatusCode(500, ApiResponse<object>.Fail(500, "Gagal membuat perangkat"));
 			}
 		}
 
@@ -94,7 +95,7 @@ namespace Api.Controllers
 			}
 			catch (Exception ex)
 			{
-				return StatusCode(500, new { status = 500, message = "An error occurred while updating device", error = ex.Message });
+				return StatusCode(500, ApiResponse<object>.Fail(500, "Gagal memperbarui perangkat"));
 			}
 		}
 
@@ -112,7 +113,7 @@ namespace Api.Controllers
 			}
 			catch (Exception ex)
 			{
-				return StatusCode(500, new { status = 500, message = "An error occurred while deleting device", error = ex.Message });
+				return StatusCode(500, ApiResponse<object>.Fail(500, "Gagal menghapus perangkat"));
 			}
 		}
 
@@ -153,11 +154,7 @@ namespace Api.Controllers
 		}
 		catch (Exception ex)
 		{
-			return StatusCode(500, new { 
-				status = 500, 
-				message = "An error occurred while testing HTTP connection", 
-				error = ex.Message 
-			});
+			return StatusCode(500, ApiResponse<object>.Fail(500, "Gagal menguji koneksi HTTP"));
 		}
 	}
 }

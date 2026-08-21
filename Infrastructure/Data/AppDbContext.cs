@@ -18,6 +18,7 @@ namespace Infrastructure.Data
 		public DbSet<User> Users { get; set; }
 		public DbSet<Device> Devices { get; set; }
 		public DbSet<Tag> Tags { get; set; }
+		public DbSet<TagHistory> TagHistories { get; set; }
 		public DbSet<MasterTable> MasterTables { get; set; }
 		public DbSet<MasterTableFields> MasterTableFields { get; set; }
 		public DbSet<StorageFlow> StorageFlows { get; set; }
@@ -77,6 +78,37 @@ namespace Infrastructure.Data
 				entity.HasOne(e => e.Device)
 					.WithMany()
 					.HasForeignKey(e => e.DeviceId)
+					.OnDelete(DeleteBehavior.Cascade);
+			});
+
+			modelBuilder.Entity<TagHistory>(entity =>
+			{
+				entity.HasKey(e => e.Id);
+				entity.Property(e => e.TagId).IsRequired();
+				entity.Property(e => e.DeviceId).IsRequired();
+
+				// datetime(6) — presisi mikrodetik, dan ini BUKAN detail kosmetik. Baku MySQL
+				// adalah datetime tanpa pecahan detik, yang membulatkan waktu ke detik terdekat;
+				// pada scan 500 ms itu berarti dua sampel berbeda punya SourceTs identik, dan
+				// indeks unik di bawah ini akan MENGGABUNGKAN keduanya menjadi satu baris.
+				// Perlindungan terhadap duplikat berubah menjadi penyebab kehilangan data.
+				entity.Property(e => e.SourceTs).HasColumnType("datetime(6)").IsRequired();
+				entity.Property(e => e.GatewayTs).HasColumnType("datetime(6)").IsRequired();
+
+				entity.Property(e => e.TextValue).HasMaxLength(500);
+				entity.Property(e => e.Note).HasMaxLength(255);
+
+				// Kunci idempotensi. Historian ditulis ulang untuk batch yang sama setiap kali
+				// proses mati setelah menulis tetapi sebelum mengomit WAL; indeks inilah yang
+				// membuat pengulangan itu tidak menghasilkan baris ganda.
+				entity.HasIndex(e => new { e.TagId, e.SourceTs }).IsUnique();
+
+				// Jalur kueri operasional: satu perangkat, satu rentang waktu.
+				entity.HasIndex(e => new { e.DeviceId, e.SourceTs });
+
+				entity.HasOne<Tag>()
+					.WithMany()
+					.HasForeignKey(e => e.TagId)
 					.OnDelete(DeleteBehavior.Cascade);
 			});
 
@@ -149,11 +181,6 @@ namespace Infrastructure.Data
 					.WithMany()
 					.HasForeignKey(e => e.MasterTableFieldId)
 					.OnDelete(DeleteBehavior.Restrict);
-
-				entity.HasOne(e => e.Tag)
-					.WithMany()
-					.HasForeignKey(e => e.TagId)
-					.OnDelete(DeleteBehavior.SetNull);
 			});
 
 			modelBuilder.Entity<FileMetadata>(entity =>

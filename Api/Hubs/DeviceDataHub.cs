@@ -1,4 +1,4 @@
-using Microsoft.AspNetCore.SignalR;
+﻿using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.Configuration;
 
 namespace Api.Hubs
@@ -43,7 +43,17 @@ namespace Api.Hubs
         /// <param name="deviceId">Device GUID to subscribe to</param>
         public async Task SubscribeToDevice(string deviceId)
         {
-            var groupName = $"{_deviceGroupPrefix}{deviceId}";
+            if (!TryGroupName(deviceId, out var groupName))
+            {
+                await Clients.Caller.SendAsync("Error", new
+                {
+                    deviceId,
+                    message = "deviceId bukan GUID yang sah",
+                    timestamp = DateTime.UtcNow
+                });
+                return;
+            }
+
             await Groups.AddToGroupAsync(Context.ConnectionId, groupName);
             await Clients.Caller.SendAsync("Subscribed", new 
             { 
@@ -60,7 +70,8 @@ namespace Api.Hubs
         /// <param name="deviceId">Device GUID to unsubscribe from</param>
         public async Task UnsubscribeFromDevice(string deviceId)
         {
-            var groupName = $"{_deviceGroupPrefix}{deviceId}";
+            if (!TryGroupName(deviceId, out var groupName)) return;
+
             await Groups.RemoveFromGroupAsync(Context.ConnectionId, groupName);
             await Clients.Caller.SendAsync("Unsubscribed", new 
             { 
@@ -69,6 +80,27 @@ namespace Api.Hubs
                 message = $"Successfully unsubscribed from device {deviceId}",
                 timestamp = DateTime.UtcNow
             });
+        }
+
+        /// <summary>
+        /// Menyusun nama grup dari GUID yang sudah diparsing, bukan dari string mentah.
+        ///
+        /// Grup SignalR dibandingkan sebagai string persis. Klien yang mengirim GUID huruf
+        /// besar, atau dengan kurung kurawal, akan masuk ke grup yang namanya berbeda dari
+        /// tujuan pengiriman frame — dan gejalanya adalah "sudah subscribe, tapi tidak ada
+        /// data yang datang", tanpa satu pun galat di kedua sisi. Memformat ulang dari
+        /// <c>Guid</c> menghapus seluruh kelas kegagalan itu.
+        /// </summary>
+        private bool TryGroupName(string deviceId, out string groupName)
+        {
+            if (Guid.TryParse(deviceId, out var parsed))
+            {
+                groupName = $"{_deviceGroupPrefix}{parsed}";
+                return true;
+            }
+
+            groupName = string.Empty;
+            return false;
         }
 
         /// <summary>

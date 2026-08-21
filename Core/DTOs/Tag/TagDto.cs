@@ -10,8 +10,53 @@ namespace Core.DTOs.Tag
 	/// Request DTO for creating a new tag
 	/// Includes linear scaling parameters for sensor value conversion
 	/// </summary>
+	/// <summary>
+	/// Pembuatan tag massal dari hasil pemilih key. Satu permintaan, bukan N permintaan:
+	/// membuat 12 tag dari satu payload adalah SATU niat pengguna, dan memecahnya menjadi 12
+	/// panggilan berarti kegagalan di tag ke-7 meninggalkan separuh pekerjaan yang harus
+	/// dibersihkan pengguna sendiri.
+	/// </summary>
+	public class CreateTagsBulkDto
+	{
+		[Required]
+		public Guid DeviceId { get; set; }
+
+		[Required]
+		[MinLength(1, ErrorMessage = "Minimal satu tag harus disertakan")]
+		[MaxLength(200, ErrorMessage = "Maksimal 200 tag per permintaan")]
+		public List<CreateTagDto> Tags { get; set; } = new();
+	}
+
+	/// <summary>Hasil pembuatan massal: yang berhasil dan yang ditolak beserta alasannya.</summary>
+	public class BulkTagResultDto
+	{
+		public int Created { get; set; }
+		public int Skipped { get; set; }
+		public List<TagResponseDto> Tags { get; set; } = new();
+
+		/// <summary>Alasan per tag yang ditolak, berformat "NamaTag: alasan".</summary>
+		public List<string> Rejected { get; set; } = new();
+	}
+
 	public class CreateTagDto
 	{
+		/// <summary>MQTT saja: topik asal nilai.</summary>
+		[StringLength(500)]
+		public string? SourceTopic { get; set; }
+
+		[Range(100, 3600000)]
+		public int ScanIntervalMs { get; set; } = 1000;
+
+		/// <summary>0 = FULL, 1 = DEADBAND, 2 = ON_CHANGE.</summary>
+		[Range(0, 2)]
+		public int StoreMode { get; set; }
+
+		public double? DeadbandAbs { get; set; }
+		public double? DeadbandPct { get; set; }
+
+		[Range(0, 86400000)]
+		public int MaxStoreGapMs { get; set; } = 60000;
+
 		[Required(ErrorMessage = "Device ID is required")]
 		public Guid DeviceId { get; set; }
 

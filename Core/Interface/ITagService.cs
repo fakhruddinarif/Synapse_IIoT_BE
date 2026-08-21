@@ -42,6 +42,12 @@ namespace Core.Interface
 		Task<TagResponseDto> CreateAsync(CreateTagDto createDto);
 
 		/// <summary>
+		/// Membuat banyak tag sekaligus dari hasil pemilih key. Kegagalan sebagian dilaporkan,
+		/// bukan membatalkan seluruh batch.
+		/// </summary>
+		Task<ApiResponse<BulkTagResultDto>> CreateBulkAsync(CreateTagsBulkDto bulkDto);
+
+		/// <summary>
 		/// Update an existing tag with validation
 		/// </summary>
 		Task<TagResponseDto> UpdateAsync(Guid id, UpdateTagDto updateDto);

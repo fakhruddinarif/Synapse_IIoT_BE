@@ -1,7 +1,8 @@
-using Core.DTOs;
+﻿using Core.DTOs;
 using Core.DTOs.Device;
 using Core.Entities;
 using Core.Enums;
+using Core.Acquisition;
 using Core.Interface;
 using Infrastructure.Data;
 using Microsoft.Extensions.Hosting;
@@ -29,8 +30,9 @@ namespace Infrastructure.Services
         private readonly IHttpClientFactory _httpClientFactory;
         private readonly ILogger<DeviceWorkerService<THub>> _logger;
         private readonly IConfiguration _configuration;
+        private readonly IAcquisitionControl _acquisition;
+        private readonly ITagEngine _tagEngine;
         private readonly string _deviceGroupPrefix;
-        private readonly Dictionary<Guid, CancellationTokenSource> _deviceTasks = new();
         private readonly Dictionary<Guid, CancellationTokenSource> _storageFlowTasks = new();
         
         // Channels for event-driven updates
@@ -45,13 +47,17 @@ namespace Infrastructure.Services
             IHubContext<THub> hubContext,
             IHttpClientFactory httpClientFactory,
             ILogger<DeviceWorkerService<THub>> logger,
-            IConfiguration configuration)
+            IConfiguration configuration,
+            IAcquisitionControl acquisition,
+            ITagEngine tagEngine)
         {
             _serviceProvider = serviceProvider;
             _hubContext = hubContext;
             _httpClientFactory = httpClientFactory;
             _logger = logger;
             _configuration = configuration;
+            _acquisition = acquisition;
+            _tagEngine = tagEngine;
             _deviceGroupPrefix = _configuration["SignalRSettings:GroupPrefix:Device"] ?? "device_";
         }
 
@@ -116,20 +122,16 @@ namespace Infrastructure.Services
                 using var scope = _serviceProvider.CreateScope();
                 var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
 
-                // Load all enabled devices
-                var enabledDevices = await dbContext.Devices
-                    .Where(d => d.IsEnabled && d.DeletedAt == null)
-                    .ToListAsync(cancellationToken);
-
-                foreach (var device in enabledDevices)
-                {
-                    await StartDevicePollingAsync(device, cancellationToken);
-                }
+                // Penarikan data perangkat BUKAN lagi tugas service ini — AcquisitionWorker
+                // yang memilikinya, lengkap dengan kelas scan, penilaian quality, dan
+                // buffer tahan-mati. Yang tersisa di sini adalah storage flow: memetakan
+                // data ke tabel buatan pengguna pada interval tersendiri.
+                _acquisition.RequestReload("initial load");
 
                 // Load all active storage flows
                 await LoadStorageFlowsAsync(dbContext, cancellationToken);
 
-                _logger.LogInformation($"Initial load completed: {enabledDevices.Count} devices, {_storageFlowTasks.Count} storage flows");
+                _logger.LogInformation($"Initial load completed: {_storageFlowTasks.Count} storage flows");
             }
             catch (Exception ex)
             {
@@ -143,30 +145,13 @@ namespace Infrastructure.Services
             {
                 try
                 {
-                    using var scope = _serviceProvider.CreateScope();
-                    var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-
-                    var device = await dbContext.Devices
-                        .Where(d => d.Id == deviceId && d.DeletedAt == null)
-                        .FirstOrDefaultAsync(cancellationToken);
-
-                    if (device != null && device.IsEnabled)
-                    {
-                        // Stop existing task if any
-                        if (_deviceTasks.TryGetValue(deviceId, out var existingCts))
-                        {
-                            await existingCts.CancelAsync();
-                            _deviceTasks.Remove(deviceId);
-                        }
-
-                        // Start new task
-                        await StartDevicePollingAsync(device, cancellationToken);
-                    }
-                    else
-                    {
-                        // Device not found or disabled, remove it
-                        await RemoveDevicePollingAsync(deviceId);
-                    }
+                    // Tidak perlu memeriksa perangkatnya di sini: penjadwal membaca ulang
+                    // SELURUH konfigurasi aktif, jadi perangkat yang dimatikan, dihapus,
+                    // maupun baru ditambahkan tertangani oleh satu jalur yang sama — tidak
+                    // ada lagi cabang "kalau begini hentikan, kalau begitu mulai" yang bisa
+                    // menyimpang dari keadaan sebenarnya.
+                    _acquisition.RequestReload($"perangkat {deviceId} berubah");
+                    await Task.CompletedTask;
                 }
                 catch (Exception ex)
                 {
@@ -181,7 +166,8 @@ namespace Infrastructure.Services
             {
                 try
                 {
-                    await RemoveDevicePollingAsync(deviceId);
+                    _acquisition.RequestReload($"perangkat {deviceId} dihapus");
+                    await Task.CompletedTask;
                 }
                 catch (Exception ex)
                 {
@@ -207,8 +193,6 @@ namespace Infrastructure.Services
                             .ThenInclude(sfd => sfd.Device)
                         .Include(sf => sf.StorageFlowMappings)
                             .ThenInclude(sfm => sfm.MasterTableField)
-                        .Include(sf => sf.StorageFlowMappings)
-                            .ThenInclude(sfm => sfm.Tag)
                         .FirstOrDefaultAsync(cancellationToken);
 
                     if (flow != null && flow.IsActive)
@@ -267,26 +251,6 @@ namespace Infrastructure.Services
             }
         }
 
-        private async Task StartDevicePollingAsync(Device device, CancellationToken stoppingToken)
-        {
-            _logger.LogInformation($"Starting polling for device: {device.Name} ({device.Id})");
-            var cts = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
-            _deviceTasks[device.Id] = cts;
-
-            // Start device polling in background
-            _ = Task.Run(() => PollDeviceAsync(device, cts.Token), stoppingToken);
-        }
-
-        private async Task RemoveDevicePollingAsync(Guid deviceId)
-        {
-            if (_deviceTasks.TryGetValue(deviceId, out var cts))
-            {
-                _logger.LogInformation($"Stopping polling for device: {deviceId}");
-                await cts.CancelAsync();
-                _deviceTasks.Remove(deviceId);
-            }
-        }
-
         private async Task StartStorageFlowAsync(StorageFlow flow, CancellationToken stoppingToken)
         {
             _logger.LogInformation($"Starting storage flow: {flow.Name} ({flow.Id})");
@@ -317,8 +281,6 @@ namespace Infrastructure.Services
                     .ThenInclude(sfd => sfd.Device)
                 .Include(sf => sf.StorageFlowMappings)
                     .ThenInclude(sfm => sfm.MasterTableField)
-                .Include(sf => sf.StorageFlowMappings)
-                    .ThenInclude(sfm => sfm.Tag)
                 .ToListAsync(stoppingToken);
 
             foreach (var flow in activeFlows)
@@ -347,9 +309,6 @@ namespace Infrastructure.Services
                             .ThenInclude(sfd => sfd.Device)
                         .Include(sf => sf.StorageFlowMappings)
                             .ThenInclude(sfm => sfm.MasterTableField)
-                        .Include(sf => sf.StorageFlowMappings)
-                            .ThenInclude(sfm => sfm.Tag)
-                                .ThenInclude(t => t!.Device)
                         .FirstOrDefaultAsync(cancellationToken);
 
                     if (currentFlow == null)
@@ -424,11 +383,12 @@ namespace Infrastructure.Services
             {
                 return device.Protocol switch
                 {
+                    // HTTP tetap diambil langsung: pemetaannya memakai JSONPath atas
+                    // payload asli, dan itu memang bekerja hari ini.
                     Protocol.HTTP => await GetHttpDataAsync(device),
-                    Protocol.MQTT => await GetMqttDataAsync(device),
-                    Protocol.MODBUS_TCP or Protocol.MODBUS_RTU => await GetModbusDataAsync(device),
-                    Protocol.OPC_UA => await GetOpcUaDataAsync(device),
-                    _ => null
+
+                    // Sisanya memakai nilai yang sudah diakuisisi, dikunci nama tag.
+                    _ => await GetTagValuesFromEngineAsync(device)
                 };
             }
             catch (Exception ex)
@@ -466,94 +426,56 @@ namespace Infrastructure.Services
             return JsonSerializer.Deserialize<object>(json);
         }
 
-        private Task<object?> GetMqttDataAsync(Device device)
+        /// <summary>
+        /// Mengambil nilai tag terbaru dari basis data nilai-sekarang (RTDB) yang diisi
+        /// AcquisitionWorker, dikunci berdasarkan NAMA TAG.
+        ///
+        /// Menggantikan tiga metode sebelumnya (MQTT, Modbus, OPC UA) yang masing-masing
+        /// MENGARANG nilai dengan Random dan menuliskannya ke tabel pengguna sebagai riwayat
+        /// pabrik. Angka acak yang tersimpan permanen jauh lebih berbahaya daripada tidak ada
+        /// angka sama sekali: keduanya sama-sama tidak informatif, tetapi yang pertama
+        /// dipercaya.
+        ///
+        /// Sekarang sumbernya satu-satunya adalah nilai yang benar-benar diakuisisi. Protokol
+        /// yang belum punya driver menghasilkan kumpulan kosong — storage flow melewatkan
+        /// siklusnya dan mencatat alasannya, bukan mengisi tabel dengan tebakan.
+        /// </summary>
+        private async Task<object?> GetTagValuesFromEngineAsync(Device device)
         {
-            var config = device.GetConfig<MqttConfig>();
-            if (config == null) return Task.FromResult<object?>(null);
-
-            // Simulated MQTT data
-            var random = new Random();
-            var data = new
-            {
-                topic = config.Topic,
-                temperature = Math.Round(20 + random.NextDouble() * 15, 2),
-                humidity = Math.Round(40 + random.NextDouble() * 40, 2),
-                pressure = Math.Round(1000 + random.NextDouble() * 50, 2)
-            };
-
-            return Task.FromResult<object?>(data);
-        }
-
-        private async Task<object?> GetModbusDataAsync(Device device)
-        {
-            // Get tags for this device
             using var scope = _serviceProvider.CreateScope();
             var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
 
             var tags = await dbContext.Tags
-                .Where(t => t.DeviceId == device.Id && t.DeletedAt == null)
+                .AsNoTracking()
+                .Where(t => t.DeviceId == device.Id && t.DeletedAt == null && t.IsActive)
+                .Select(t => new { t.Id, t.Name })
                 .ToListAsync();
 
-            // Simulate reading tag values
             var data = new Dictionary<string, object>();
-            var random = new Random();
 
             foreach (var tag in tags)
             {
-                // Simulate tag value based on data type
-                object value = tag.DataType switch
-                {
-                    DataType.INT16 or DataType.INT32 => random.Next(0, 100),
-                    DataType.UINT16 or DataType.UINT32 => random.Next(0, 100),
-                    DataType.FLOAT => Math.Round(random.NextDouble() * 100, 2),
-                    DataType.BOOLEAN => random.Next(0, 2) == 1,
-                    DataType.STRING => $"Value_{random.Next(1, 10)}",
-                    _ => 0
-                };
+                var snapshot = _tagEngine.GetSnapshot(tag.Id);
+                if (snapshot is null) continue;
 
-                // Apply scaling if enabled
-                if (tag.IsScaled && tag.DataType == DataType.FLOAT && 
-                    tag.RawMin.HasValue && tag.RawMax.HasValue && 
-                    tag.EuMin.HasValue && tag.EuMax.HasValue)
-                {
-                    var rawValue = (double)value;
-                    value = tag.EuMin.Value + 
-                        (rawValue - tag.RawMin.Value) * (tag.EuMax.Value - tag.EuMin.Value) / 
-                        (tag.RawMax.Value - tag.RawMin.Value);
-                }
+                // Quality Bad berarti nilainya tidak diketahui. Menyimpannya sebagai angka
+                // biasa menghapus perbedaan antara "nilai ini benar" dan "kami kehilangan
+                // kontak" — dan justru perbedaan itu yang dicari saat hasil produksi
+                // ditelusuri kembali.
+                if (snapshot.Sample.Quality == Quality.Bad) continue;
 
-                data[tag.Name] = value;
+                object? value = snapshot.Sample.Numeric
+                    ?? (object?)snapshot.Sample.Boolean
+                    ?? snapshot.Sample.Text;
+
+                if (value is not null) data[tag.Name] = value;
             }
 
-            return data;
-        }
-
-        private async Task<object?> GetOpcUaDataAsync(Device device)
-        {
-            // Similar to Modbus, use tags
-            using var scope = _serviceProvider.CreateScope();
-            var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-
-            var tags = await dbContext.Tags
-                .Where(t => t.DeviceId == device.Id && t.DeletedAt == null)
-                .ToListAsync();
-
-            var data = new Dictionary<string, object>();
-            var random = new Random();
-
-            foreach (var tag in tags)
+            if (data.Count == 0)
             {
-                object value = tag.DataType switch
-                {
-                    DataType.INT16 or DataType.INT32 => random.Next(0, 100),
-                    DataType.UINT16 or DataType.UINT32 => random.Next(0, 100),
-                    DataType.FLOAT => Math.Round(random.NextDouble() * 100, 2),
-                    DataType.BOOLEAN => random.Next(0, 2) == 1,
-                    DataType.STRING => $"Value_{random.Next(1, 10)}",
-                    _ => 0
-                };
-
-                data[tag.Name] = value;
+                _logger.LogWarning(
+                    "Tidak ada nilai tag terbaru untuk {Device} ({Protocol}); storage flow tidak menulis apa pun siklus ini",
+                    device.Name, device.Protocol);
             }
 
             return data;
@@ -577,8 +499,8 @@ namespace Infrastructure.Services
                     {
                         object? value = null;
 
-                        // For HTTP/MQTT, use JSONPath
-                        if (device.Protocol == Protocol.HTTP || device.Protocol == Protocol.MQTT)
+                        // Hanya HTTP yang punya payload JSON asli untuk ditelusuri.
+                        if (device.Protocol == Protocol.HTTP)
                         {
                             _logger.LogDebug($"[ExtractData] Trying JSONPath: {mapping.SourcePath} -> Field: {mapping.MasterTableField.Name}");
 
@@ -594,12 +516,20 @@ namespace Infrastructure.Services
                                 _logger.LogWarning($"[ExtractData] ❌ JSONPath '{mapping.SourcePath}' returned null - Check if path is correct!");
                             }
                         }
-                        // For MODBUS/OPCUA, use Tag name from dictionary
-                        else if (device.Protocol == Protocol.MODBUS_TCP || device.Protocol == Protocol.MODBUS_RTU || device.Protocol == Protocol.OPC_UA)
+                        // Protokol non-HTTP: kuncinya nama tag, bukan JSONPath.
+                        else if (responseData is Dictionary<string, object> dict)
                         {
-                            if (responseData is Dictionary<string, object> dict)
+                            if (!dict.TryGetValue(mapping.SourcePath, out value))
                             {
-                                dict.TryGetValue(mapping.SourcePath, out value);
+                                // Toleransi konfigurasi lama yang menyimpan "$.nama":
+                                // dulu MQTT dipetakan dengan JSONPath atas payload
+                                // karangan. Prefix dilepas dan sisanya dicoba sebagai nama
+                                // tag, supaya pemetaan yang sudah ada tidak mati diam-diam.
+                                var bare = mapping.SourcePath.StartsWith("$.")
+                                    ? mapping.SourcePath[2..]
+                                    : mapping.SourcePath;
+
+                                dict.TryGetValue(bare, out value);
                             }
                         }
 
@@ -666,149 +596,9 @@ namespace Infrastructure.Services
             };
         }
 
-        private async Task PollDeviceAsync(Device device, CancellationToken cancellationToken)
-        {
-            _logger.LogInformation($"Polling started for {device.Name} with interval {device.PollingInterval}ms");
-
-            while (!cancellationToken.IsCancellationRequested)
-            {
-                try
-                {
-                    DeviceDataDto? data = device.Protocol switch
-                    {
-                        Protocol.HTTP => await PollHttpDeviceAsync(device),
-                        Protocol.MQTT => await PollMqttDeviceAsync(device),
-                        _ => null
-                    };
-
-                    if (data != null)
-                    {
-                        // Broadcast to all clients
-                        await _hubContext.Clients.All.SendAsync("ReceiveDeviceData", data, cancellationToken);
-
-                        // Also broadcast to specific device group
-                        await _hubContext.Clients.Group($"{_deviceGroupPrefix}{device.Id}")
-                            .SendAsync("ReceiveDeviceData", data, cancellationToken);
-
-                        _logger.LogDebug($"Data sent for device {device.Name}: {JsonSerializer.Serialize(data.Data)}");
-                    }
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex, $"Error polling device {device.Name}");
-
-                    // Send error to clients
-                    var errorData = new DeviceDataDto
-                    {
-                        DeviceId = device.Id,
-                        DeviceName = device.Name,
-                        Protocol = device.Protocol.ToString(),
-                        Data = new { },
-                        Status = "error",
-                        Message = ex.Message,
-                        Timestamp = DateTime.UtcNow
-                    };
-
-                    await _hubContext.Clients.All.SendAsync("ReceiveDeviceData", errorData, cancellationToken);
-                }
-
-                // Wait for the polling interval
-                await Task.Delay(device.PollingInterval, cancellationToken);
-            }
-
-            _logger.LogInformation($"Polling stopped for {device.Name}");
-        }
-
-        private async Task<DeviceDataDto?> PollHttpDeviceAsync(Device device)
-        {
-            var config = device.GetConfig<HttpConfig>();
-            if (config == null)
-            {
-                throw new InvalidOperationException($"Invalid HTTP config for device {device.Name}");
-            }
-
-            var client = _httpClientFactory.CreateClient();
-            client.Timeout = TimeSpan.FromSeconds(10);
-
-            // Add custom headers if any
-            if (config.Headers != null)
-            {
-                foreach (var header in config.Headers)
-                {
-                    client.DefaultRequestHeaders.Add(header.Key, header.Value);
-                }
-            }
-
-            HttpResponseMessage response = config.Method.ToUpper() switch
-            {
-                "GET" => await client.GetAsync(config.Url),
-                "POST" => await client.PostAsync(config.Url, null),
-                "PUT" => await client.PutAsync(config.Url, null),
-                "DELETE" => await client.DeleteAsync(config.Url),
-                _ => throw new InvalidOperationException($"Unsupported HTTP method: {config.Method}")
-            };
-
-            response.EnsureSuccessStatusCode();
-
-            var responseData = await response.Content.ReadAsStringAsync();
-            var jsonData = JsonSerializer.Deserialize<object>(responseData);
-
-            return new DeviceDataDto
-            {
-                DeviceId = device.Id,
-                DeviceName = device.Name,
-                Protocol = device.Protocol.ToString(),
-                Data = jsonData ?? new { },
-                Status = "success",
-                Timestamp = DateTime.UtcNow
-            };
-        }
-
-        private Task<DeviceDataDto?> PollMqttDeviceAsync(Device device)
-        {
-            var config = device.GetConfig<MqttConfig>();
-            if (config == null)
-            {
-                throw new InvalidOperationException($"Invalid MQTT config for device {device.Name}");
-            }
-
-            // For MQTT, we'll simulate receiving data with random values
-            // In production, you would maintain persistent MQTT connections
-            
-            var random = new Random();
-            var simulatedData = new
-            {
-                topic = config.Topic,
-                temperature = Math.Round(20 + random.NextDouble() * 15, 2),
-                humidity = Math.Round(40 + random.NextDouble() * 40, 2),
-                pressure = Math.Round(1000 + random.NextDouble() * 50, 2)
-            };
-
-            var result = new DeviceDataDto
-            {
-                DeviceId = device.Id,
-                DeviceName = device.Name,
-                Protocol = device.Protocol.ToString(),
-                Data = simulatedData,
-                Status = "success",
-                Message = "Simulated MQTT data",
-                Timestamp = DateTime.UtcNow
-            };
-
-            return Task.FromResult<DeviceDataDto?>(result);
-        }
-
         public override async Task StopAsync(CancellationToken cancellationToken)
         {
             _logger.LogInformation("DeviceWorkerService stopping...");
-
-            // Cancel all device polling tasks
-            foreach (var cts in _deviceTasks.Values)
-            {
-                await cts.CancelAsync();
-            }
-
-            _deviceTasks.Clear();
 
             // Cancel all storage flow tasks
             foreach (var cts in _storageFlowTasks.Values)

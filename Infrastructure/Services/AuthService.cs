@@ -1,7 +1,6 @@
 using Core.DTOs;
 using Core.Entities;
 using Core.Interface;
-using System.Security.Cryptography;
 
 namespace Infrastructure.Services
 {
@@ -9,8 +8,6 @@ namespace Infrastructure.Services
 	{
 		private readonly IUserRepository _userRepository;
 		private readonly ITokenService _tokenService;
-		private static readonly Dictionary<string, DateTime> _csrfTokens = new();
-		private static readonly TimeSpan _csrfTokenLifetime = TimeSpan.FromHours(1);
 
 		public AuthService(IUserRepository userRepository, ITokenService tokenService)
 		{
@@ -26,8 +23,8 @@ namespace Infrastructure.Services
 				return new AuthResponseDto
 				{
 					Status = 400,
-					Message = "Username already exists",
-					Error = new { username = "Username already exists" }
+					Message = "Username sudah terpakai",
+					Errors = new List<string> { "Username sudah terpakai. Pilih username lain." }
 				};
 			}
 
@@ -49,25 +46,30 @@ namespace Infrastructure.Services
 			return new AuthResponseDto
 			{
 				Status = 201,
-				Message = "User registered successfully",
-				Data = MapToUserInfoDto(user),
-				Error = null
+				Message = "User berhasil didaftarkan",
+				Data = MapToUserInfoDto(user)
 			};
 		}
 
 		public async Task<(bool Success, string Message, UserInfoDto? UserInfo, string? Token)> LoginAsync(LoginDto dto)
 		{
-			// Check if user exists
 			var user = await _userRepository.GetByUsernameAsync(dto.Username);
+
 			if (user == null)
 			{
-				return (false, "Invalid username or password", null, null);
+				// Verifikasi tetap dijalankan terhadap hash tiruan.
+				//
+				// Tanpa ini, username yang tidak ada dijawab seketika sementara username yang
+				// ada menanggung ~250 ms perhitungan BCrypt. Selisih itu cukup untuk memetakan
+				// akun mana yang benar-benar ada — enumerasi pengguna lewat perbedaan waktu,
+				// meski pesan kesalahannya sudah dibuat sama.
+				VerifyPassword(dto.Password, DummyHash);
+				return (false, "Username atau password salah", null, null);
 			}
 
-			// Verify password
 			if (!VerifyPassword(dto.Password, user.PasswordHash))
 			{
-				return (false, "Invalid username or password", null, null);
+				return (false, "Username atau password salah", null, null);
 			}
 
 			// Generate JWT token
@@ -87,50 +89,24 @@ namespace Infrastructure.Services
 			return MapToUserInfoDto(user);
 		}
 
-		public string GenerateCsrfToken()
-		{
-			var token = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
-			_csrfTokens[token] = DateTime.UtcNow.Add(_csrfTokenLifetime);
-			
-			// Clean up expired tokens
-			CleanupExpiredTokens();
-			
-			return token;
-		}
+		/// <summary>
+		/// Work factor 12. Cukup lambat untuk membuat brute force offline mahal bila database
+		/// bocor, masih cukup cepat untuk login interaktif. Default pustaka (11) dinaikkan
+		/// satu tingkat karena biaya login bukan jalur panas di sistem ini.
+		/// </summary>
+		private const int BcryptWorkFactor = 12;
 
-		public bool ValidateCsrfToken(string token)
-		{
-			if (string.IsNullOrEmpty(token))
-				return false;
-
-			if (_csrfTokens.TryGetValue(token, out var expiration))
-			{
-				if (DateTime.UtcNow <= expiration)
-				{
-					return true;
-				}
-				else
-				{
-					_csrfTokens.Remove(token);
-					return false;
-				}
-			}
-
-			return false;
-		}
-
-		private static void CleanupExpiredTokens()
-		{
-			var expiredTokens = _csrfTokens.Where(kvp => DateTime.UtcNow > kvp.Value).Select(kvp => kvp.Key).ToList();
-			foreach (var token in expiredTokens)
-			{
-				_csrfTokens.Remove(token);
-			}
-		}
+		/// <summary>
+		/// Hash tiruan untuk menyamakan waktu jawaban saat username tidak ditemukan. Nilainya
+		/// hash BCrypt sah atas string tetap, jadi verifikasinya menghabiskan waktu yang sama
+		/// dengan verifikasi sungguhan.
+		/// </summary>
+		private static readonly string DummyHash =
+			BCrypt.Net.BCrypt.HashPassword("synapse-timing-equalizer", BcryptWorkFactor);
 
 		private static string HashPassword(string password)
 		{
-			return BCrypt.Net.BCrypt.HashPassword(password);
+			return BCrypt.Net.BCrypt.HashPassword(password, BcryptWorkFactor);
 		}
 
 		private static bool VerifyPassword(string password, string hash)

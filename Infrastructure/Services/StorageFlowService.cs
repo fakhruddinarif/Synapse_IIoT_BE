@@ -107,20 +107,6 @@ namespace Infrastructure.Services
                 }
             }
 
-            // Validate tags if specified
-            var mappingsWithTags = dto.Mappings.Where(m => m.TagId.HasValue).ToList();
-            foreach (var mapping in mappingsWithTags)
-            {
-                var tag = await _context.Tags
-                    .Where(t => t.Id == mapping.TagId!.Value && t.DeletedAt == null)
-                    .FirstOrDefaultAsync();
-                
-                if (tag == null)
-                {
-                    throw new BadRequestException($"Tag with ID {mapping.TagId} not found");
-                }
-            }
-
             // Create StorageFlow
             var storageFlow = new StorageFlow
             {
@@ -153,8 +139,7 @@ namespace Infrastructure.Services
                     Id = Guid.NewGuid(),
                     StorageFlowId = storageFlow.Id,
                     MasterTableFieldId = mappingDto.MasterTableFieldId,
-                    SourcePath = mappingDto.SourcePath,
-                    TagId = mappingDto.TagId
+                    SourcePath = mappingDto.SourcePath
                 };
                 await _context.StorageFlowMappings.AddAsync(mapping);
             }
@@ -250,8 +235,7 @@ namespace Infrastructure.Services
                         Id = Guid.NewGuid(),
                         StorageFlowId = id,
                         MasterTableFieldId = mappingDto.MasterTableFieldId,
-                        SourcePath = mappingDto.SourcePath,
-                        TagId = mappingDto.TagId
+                        SourcePath = mappingDto.SourcePath
                     };
                     await _context.StorageFlowMappings.AddAsync(mapping);
                 }
@@ -341,9 +325,7 @@ namespace Infrastructure.Services
                     MasterTableFieldId = sfm.MasterTableFieldId,
                     FieldName = sfm.MasterTableField?.Name ?? "",
                     FieldDataType = sfm.MasterTableField?.DataType.ToString() ?? "",
-                    SourcePath = sfm.SourcePath,
-                    TagId = sfm.TagId,
-                    TagName = sfm.Tag?.Name
+                    SourcePath = sfm.SourcePath
                 }).ToList(),
                 CreatedAt = flow.CreatedAt,
                 UpdatedAt = flow.UpdatedAt

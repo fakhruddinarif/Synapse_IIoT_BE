@@ -38,25 +38,25 @@ namespace Core.Entities
 
 		// =============== Linear Scaling Parameters ===============
 		public bool IsScaled { get; set; } = false;
-		
+
 		/// <summary>
 		/// Raw minimum value from device (before scaling)
 		/// Example: 0 for 0-4095 ADC range
 		/// </summary>
 		public double? RawMin { get; set; } = 0; // Value PLC (0)
-		
+
 		/// <summary>
 		/// Raw maximum value from device (before scaling)
 		/// Example: 4095 for 10-bit ADC
 		/// </summary>
 		public double? RawMax { get; set; } = 4095; // Value PLC (4095)
-		
+
 		/// <summary>
 		/// Engineered unit minimum after scaling
 		/// Example: 0 for 0-100°C temperature range
 		/// </summary>
 		public double? EuMin { get; set; } = 0;  // Value Engineering (0 Derajat)
-		
+
 		/// <summary>
 		/// Engineered unit maximum after scaling
 		/// Example: 100 for 0-100°C temperature range
@@ -84,6 +84,36 @@ namespace Core.Entities
 		/// Used by Watchdog to determine if device is online/offline
 		/// </summary>
 		public DateTime? ValueUpdatedAt { get; set; }
+
+		// =============== Akuisisi & Penyimpanan ===============
+		/// <summary>
+		/// MQTT saja: topik asal nilai ini. Satu koneksi broker melayani banyak topik, jadi
+		/// alamat (JSONPath) sendirian tidak cukup untuk menentukan tag mana yang dimaksud —
+		/// dua topik berbeda bisa punya path "$.temp" yang sama.
+		/// </summary>
+		[MaxLength(500)]
+		public string? SourceTopic { get; set; }
+
+		/// <summary>
+		/// Laju baca yang diminta, dalam milidetik. Dikelompokkan menjadi scan class oleh
+		/// penjadwal — tag dengan interval sama dibaca dalam satu tick, bukan satu timer
+		/// per tag.
+		/// </summary>
+		public int ScanIntervalMs { get; set; } = 1000;
+
+		/// <summary>0 = FULL (setiap sampel), 1 = DEADBAND, 2 = ON_CHANGE. Baku FULL, sesuai
+		/// syarat "tidak ada data yang boleh hilang"; deadband hanya aktif bila dinyatakan.</summary>
+		public int StoreMode { get; set; }
+
+		/// <summary>Deadband absolut dalam satuan teknis.</summary>
+		public double? DeadbandAbs { get; set; }
+
+		/// <summary>Deadband sebagai persen rentang EU.</summary>
+		public double? DeadbandPct { get; set; }
+
+		/// <summary>Simpan paksa tiap N ms walau nilai tidak berubah, supaya grafik jangka
+		/// panjang bisa membedakan "tidak berubah" dari "tidak terpantau".</summary>
+		public int MaxStoreGapMs { get; set; } = 60000;
 
 		// ================== Availability & Metadata ==================
 		public bool IsActive { get; set; } = true;

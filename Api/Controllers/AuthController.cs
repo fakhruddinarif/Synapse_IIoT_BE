@@ -1,8 +1,11 @@
+using System.Security.Claims;
 using Core.DTOs;
 using Core.Interface;
+using Core.Security;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
-using System.Security.Claims;
+using Microsoft.AspNetCore.RateLimiting;
+using Microsoft.Extensions.Options;
 
 namespace Api.Controllers
 {
@@ -10,168 +13,213 @@ namespace Api.Controllers
 	[Route("api")]
 	public class AuthController : ControllerBase
 	{
-		private readonly IAuthService _authService;
+		private const string SessionCookieName = "JWT-TOKEN";
 
-		public AuthController(IAuthService authService)
+		private readonly IAuthService _authService;
+		private readonly ILoginThrottle _loginThrottle;
+		private readonly SecuritySettings _security;
+		private readonly int _sessionMinutes;
+		private readonly ILogger<AuthController> _logger;
+
+		public AuthController(
+			IAuthService authService,
+			ILoginThrottle loginThrottle,
+			IOptions<SecuritySettings> security,
+			IConfiguration configuration,
+			ILogger<AuthController> logger)
 		{
 			_authService = authService;
+			_loginThrottle = loginThrottle;
+			_security = security.Value;
+			_sessionMinutes = int.TryParse(configuration["JwtSettings:ExpirationInMinutes"], out var minutes)
+				? minutes
+				: 60;
+			_logger = logger;
 		}
 
+		/* ------------------------------------------------------------ register */
+
 		/// <summary>
-	/// Generate CSRF Token and store in cookie - DISABLED
-	/// </summary>
-	// [HttpGet("csrf-token")]
-	// public IActionResult GetCsrfToken()
-	// {
-	// 	try
-	// 	{
-	// 		var token = _authService.GenerateCsrfToken();
-	//
-	// 		// Set CSRF token in HTTP-only cookie
-	// 		Response.Cookies.Append("X-CSRF-TOKEN", token, new CookieOptions
-	// 		{
-	// 			HttpOnly = true,
-	// 			Secure = false, // Allow HTTP in development for Postman testing
-	// 			SameSite = SameSiteMode.Lax,
-	// 			Expires = DateTimeOffset.UtcNow.AddHours(1)
-	// 		});
-	//
-	// 		var response = new { csrf_token = token };
-	//
-	// 		return Ok(ApiResponse<object>.Success(response, "CSRF token generated successfully"));
-	// 	}
-	// 	catch (Exception ex)
-	// 	{
-	// 		return StatusCode(500, ApiResponse<object>.Fail(500, "An error occurred while generating CSRF token", ex.Message));
-	// 	}
-	// }
-		/// <summary>
-		/// Register new user
-		/// POST /api/auth/register
+		/// Mendaftarkan pengguna baru.
+		///
+		/// Registrasi TIDAK memasang cookie sesi: pendaftaran dan pemberian sesi adalah dua
+		/// keputusan berbeda, dan memisahkannya membuat alur persetujuan admin (bila kelak
+		/// dibutuhkan) tidak perlu membongkar endpoint ini.
 		/// </summary>
 		[HttpPost("auth/register")]
+		[AllowAnonymous]
+		[EnableRateLimiting("Login")]
 		public async Task<IActionResult> Register([FromBody] RegisterDto dto)
 		{
-			try
+			if (!ModelState.IsValid) return InvalidModelState();
+
+			var result = await _authService.RegisterAsync(dto);
+
+			if (result.Status is not (200 or 201))
 			{
-				if (!ModelState.IsValid)
-				{
-					var errors = ModelState.Values.SelectMany(v => v.Errors.Select(e => e.ErrorMessage)).ToList();
-					return BadRequest(ApiResponse<object>.Fail(400, "Invalid input", errors));
-				}
-
-				var result = await _authService.RegisterAsync(dto);
-
-				if (result.Status != 201)
-				{
-					return BadRequest(ApiResponse<UserInfoDto>.Fail(result.Status, result.Message, result.Error));
-				}
-
-				return StatusCode(201, ApiResponse<UserInfoDto>.SuccessWithStatus(201, result.Data, result.Message));
+				return StatusCode(result.Status,
+					ApiResponse<UserInfoDto>.Fail(result.Status, result.Message, result.Errors));
 			}
-			catch (Exception ex)
-			{
-				return StatusCode(500, ApiResponse<object>.Fail(500, "An error occurred during registration", ex.Message));
-			}
+
+			_logger.LogInformation("User baru terdaftar: {Username}", dto.Username);
+
+			return StatusCode(201,
+				ApiResponse<UserInfoDto>.SuccessWithStatus(201, result.Data, result.Message));
 		}
 
+		/* --------------------------------------------------------------- login */
+
 		/// <summary>
-		/// Login user and generate JWT token
-		/// POST /api/auth/login
+		/// Login. Token dikirim sebagai cookie HTTP-only, tidak pernah di body respons —
+		/// token yang bisa dibaca JavaScript berarti satu XSS mana pun cukup untuk mencuri
+		/// sesi.
 		/// </summary>
 		[HttpPost("auth/login")]
+		[AllowAnonymous]
+		[EnableRateLimiting("Login")]
 		public async Task<IActionResult> Login([FromBody] LoginDto dto)
 		{
-			try
+			if (!ModelState.IsValid) return InvalidModelState();
+
+			var ip = HttpContext.Connection.RemoteIpAddress?.ToString();
+
+			// Penguncian diperiksa SEBELUM password diverifikasi. Kalau diperiksa sesudah,
+			// setiap percobaan tetap menghabiskan satu perhitungan BCrypt dan penyerang
+			// mendapat pembayaran gratis atas serangannya.
+			var (isLocked, retryAfter) = _loginThrottle.Check(dto.Username, ip);
+			if (isLocked)
 			{
-				if (!ModelState.IsValid)
+				Response.Headers.RetryAfter = ((int)Math.Ceiling(retryAfter.TotalSeconds)).ToString();
+
+				_logger.LogWarning("Login ditolak (terkunci) untuk {Username} dari {Ip}", dto.Username, ip);
+
+				return StatusCode(429, ApiResponse<object>.Fail(429,
+					"Terlalu banyak percobaan login",
+					$"Coba lagi dalam {Math.Ceiling(retryAfter.TotalMinutes)} menit."));
+			}
+
+			var (success, message, userInfo, token) = await _authService.LoginAsync(dto);
+
+			if (!success || token is null)
+			{
+				var remaining = _loginThrottle.RegisterFailure(dto.Username, ip);
+
+				// Pesannya tetap sama untuk username tidak dikenal maupun password salah —
+				// membedakannya memberi tahu penyerang akun mana yang ada. Sisa percobaan
+				// disertakan karena itu informasi tentang PEMANGGIL, bukan tentang akun.
+				var errors = new List<string> { message };
+				if (remaining is > 0 and <= 2)
 				{
-					var errors = ModelState.Values.SelectMany(v => v.Errors.Select(e => e.ErrorMessage)).ToList();
-					return BadRequest(ApiResponse<object>.Fail(400, "Invalid input", errors));
+					errors.Add($"Sisa {remaining} percobaan sebelum akun dikunci sementara.");
 				}
 
-				var (success, message, userInfo, token) = await _authService.LoginAsync(dto);
-
-				if (!success || token == null)
-				{
-					return Unauthorized(ApiResponse<object>.Fail(401, message));
-				}
-
-				// Set JWT token in HTTP-only cookie
-				Response.Cookies.Append("JWT-TOKEN", token, new CookieOptions
-				{
-					HttpOnly = true,
-					Secure = false, // Allow HTTP in development for Postman testing
-					SameSite = SameSiteMode.Lax,
-					Expires = DateTimeOffset.UtcNow.AddHours(1)
-				});
-
-				return Ok(ApiResponse<UserInfoDto>.Success(userInfo, message));
+				return Unauthorized(ApiResponse<object>.Fail(401, message, errors));
 			}
-			catch (Exception ex)
-			{
-				return StatusCode(500, ApiResponse<object>.Fail(500, "An error occurred during login", ex.Message));
-			}
+
+			_loginThrottle.Reset(dto.Username, ip);
+			AppendSessionCookie(token);
+
+			_logger.LogInformation("Login berhasil: {Username} dari {Ip}", dto.Username, ip);
+
+			return Ok(ApiResponse<UserInfoDto>.Success(userInfo, "Login berhasil"));
 		}
 
-		/// <summary>
-		/// Get current logged-in user info
-		/// GET /api/auth/info
-		/// Requires authentication
-		/// </summary>
-		[Authorize]
+		/* ---------------------------------------------------------------- info */
+
 		[HttpGet("auth/info")]
+		[Authorize]
 		public async Task<IActionResult> GetUserInfo()
 		{
-			try
+			var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value
+				?? User.FindFirst("sub")?.Value;
+
+			if (string.IsNullOrEmpty(userIdClaim) || !Guid.TryParse(userIdClaim, out var userId))
 			{
-				// Get userId from JWT claims
-				var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value
-					?? User.FindFirst("sub")?.Value;
-
-				if (string.IsNullOrEmpty(userIdClaim) || !Guid.TryParse(userIdClaim, out var userId))
-				{
-					return Unauthorized(ApiResponse<object>.Fail(401, "Invalid token"));
-				}
-
-				var userInfo = await _authService.GetUserInfoAsync(userId);
-
-				if (userInfo == null)
-				{
-					return NotFound(ApiResponse<object>.Fail(404, "User not found"));
-				}
-
-				return Ok(ApiResponse<UserInfoDto>.Success(userInfo, "User info retrieved successfully"));
+				return Unauthorized(ApiResponse<object>.Fail(401, "Sesi tidak valid"));
 			}
-			catch (Exception ex)
+
+			var userInfo = await _authService.GetUserInfoAsync(userId);
+
+			if (userInfo is null)
 			{
-				return StatusCode(500, ApiResponse<object>.Fail(500, "An error occurred while retrieving user info", ex.Message));
+				// Token sah tapi penggunanya sudah tidak ada (dihapus admin lain). Cookie
+				// dihapus di sini supaya klien tidak terus mengirim token yang tidak akan
+				// pernah berhasil lagi.
+				DeleteSessionCookie();
+				return Unauthorized(ApiResponse<object>.Fail(401, "Akun tidak ditemukan"));
 			}
+
+			return Ok(ApiResponse<UserInfoDto>.Success(userInfo, "Info user berhasil diambil"));
 		}
 
+		/* -------------------------------------------------------------- logout */
+
 		/// <summary>
-		/// Logout user by removing JWT token cookie
-		/// POST /api/auth/logout
+		/// Logout. Dibiarkan anonim: memaksa <c>[Authorize]</c> di sini berarti sesi yang
+		/// sudah kedaluwarsa tidak bisa dibersihkan cookienya, dan pengguna terjebak dengan
+		/// cookie basi yang membuat setiap request berakhir 401.
 		/// </summary>
 		[HttpPost("auth/logout")]
+		[AllowAnonymous]
 		public IActionResult Logout()
 		{
-			try
-			{
-				// Delete JWT-TOKEN cookie
-				Response.Cookies.Delete("JWT-TOKEN", new CookieOptions
-				{
-					HttpOnly = true,
-					Secure = false,
-					SameSite = SameSiteMode.Lax
-				});
+			DeleteSessionCookie();
+			return Ok(ApiResponse<object>.Success(null, "Berhasil keluar"));
+		}
 
-				return Ok(ApiResponse<object>.Success(null, "Logged out successfully"));
-			}
-			catch (Exception ex)
-			{
-				return StatusCode(500, ApiResponse<object>.Fail(500, "An error occurred during logout", ex.Message));
-			}
+		/* ------------------------------------------------------------- helpers */
+
+		/// <summary>
+		/// Opsi cookie sesi. Semua atribut harus IDENTIK antara pemasangan dan penghapusan;
+		/// browser mencocokkan cookie berdasarkan nama + domain + path, dan penghapusan
+		/// dengan atribut berbeda menyisakan cookie aslinya tetap hidup.
+		/// </summary>
+		private CookieOptions BuildCookieOptions(DateTimeOffset? expires) => new()
+		{
+			HttpOnly = true,
+
+			// Wajib true di produksi: cookie tanpa Secure ikut terkirim di HTTP polos, dan
+			// siapa pun di jaringan pabrik yang sama bisa membacanya.
+			Secure = _security.CookieSecure,
+
+			// Strict berarti cookie tidak pernah dikirim pada permintaan lintas situs —
+			// lapisan pertama pertahanan CSRF, dilengkapi validasi Origin di middleware.
+			SameSite = _security.CookieSameSite.Equals("Lax", StringComparison.OrdinalIgnoreCase)
+				? SameSiteMode.Lax
+				: SameSiteMode.Strict,
+
+			Path = "/",
+			Expires = expires,
+
+			// Domain sengaja tidak diisi: cookie menjadi host-only, sehingga subdomain lain
+			// pada domain yang sama tidak bisa menerimanya.
+			IsEssential = true
+		};
+
+		private void AppendSessionCookie(string token)
+		{
+			// Masa hidup cookie disamakan dengan masa hidup token. Cookie yang hidup lebih
+			// lama hanya membuat browser terus mengirim token mati; cookie yang lebih pendek
+			// membuat sesi berakhir lebih awal dari yang dijanjikan.
+			Response.Cookies.Append(
+				SessionCookieName,
+				token,
+				BuildCookieOptions(DateTimeOffset.UtcNow.AddMinutes(_sessionMinutes)));
+		}
+
+		private void DeleteSessionCookie()
+		{
+			Response.Cookies.Delete(SessionCookieName, BuildCookieOptions(null));
+		}
+
+		private IActionResult InvalidModelState()
+		{
+			var errors = ModelState.Values
+				.SelectMany(v => v.Errors.Select(e => e.ErrorMessage))
+				.Where(m => !string.IsNullOrWhiteSpace(m))
+				.ToList();
+
+			return BadRequest(ApiResponse<object>.Fail(400, "Input tidak valid", errors));
 		}
 	}
 }

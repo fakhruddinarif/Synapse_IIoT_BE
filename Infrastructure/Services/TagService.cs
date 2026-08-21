@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
@@ -28,14 +28,44 @@ namespace Infrastructure.Services
 		private readonly IDeviceRepository _deviceRepository;
 		private readonly ILogger<TagService> _logger;
 
+		private readonly IAcquisitionControl _acquisition;
+
 		public TagService(
 			ITagRepository tagRepository,
 			IDeviceRepository deviceRepository,
-			ILogger<TagService> logger)
+			ILogger<TagService> logger,
+			IAcquisitionControl acquisition)
 		{
 			_tagRepository = tagRepository;
 			_deviceRepository = deviceRepository;
 			_logger = logger;
+			_acquisition = acquisition;
+		}
+
+		/// <summary>
+		/// Memberi tahu penjadwal bahwa rencana akuisisi berubah.
+		///
+		/// Dipanggil setelah perubahan TERSIMPAN, bukan sebelum: penjadwal membaca ulang
+		/// konfigurasi dari database, jadi sinyal yang dikirim lebih dulu akan membaca
+		/// keadaan lama dan perubahannya baru terpakai pada replan berikutnya — yang mungkin
+		/// tidak pernah datang.
+		///
+		/// Pemanggilan berkali-kali tidak masalah: sinyalnya digabung, jadi membuat 200 tag
+		/// lewat endpoint massal menghasilkan satu penyusunan ulang, bukan dua ratus.
+		/// </summary>
+		private void NotifyAcquisition(string reason)
+		{
+			try
+			{
+				_acquisition.RequestReload(reason);
+			}
+			catch (Exception ex)
+			{
+				// Tag sudah tersimpan. Gagal memberi tahu penjadwal berarti perubahan baru
+				// aktif pada replan berikutnya, bukan berarti permintaan pengguna gagal —
+				// jadi ini dicatat, tidak dilempar ke pemanggil.
+				_logger.LogWarning(ex, "Gagal memberi sinyal replan ke penjadwal akuisisi");
+			}
 		}
 
 		/// <summary>
@@ -121,7 +151,7 @@ namespace Infrastructure.Services
 
 			var dtos = tags.Select(ToDto).ToList();
 			var totalPages = (int)Math.Ceiling((double)total / filter.PageSize);
-			
+
 			return new ApiResponse<List<TagResponseDto>>
 			{
 				Status = 200,
@@ -139,19 +169,82 @@ namespace Infrastructure.Services
 		catch (Exception ex)
 		{
 			_logger.LogError(ex, "Error retrieving all tags");
-			return new ApiResponse<List<TagResponseDto>>
-			{
-				Status = 500,
-				Message = "Error retrieving tags",
-				Data = null,
-				Error = ex.Message
-			};
+			// Detail exception hanya masuk log (sudah dicatat di atas); klien menerima pesan
+			// umum. Pesan exception database memuat potongan SQL dan nama kolom.
+			return ApiResponse<List<TagResponseDto>>.Fail(500, "Gagal mengambil daftar tag");
 		}
 	}
 
 	/// <summary>
 	/// Create a new tag with comprehensive validation
 	/// </summary>
+	/// <summary>
+	/// Penskalaan dianggap dimaksudkan bila rentang mentah berbeda dari rentang teknis.
+	/// Raw 0..100 → EU 0..100 adalah pemetaan identitas; menandainya "berskala" hanya
+	/// menambah perhitungan yang hasilnya sama.
+	/// </summary>
+	private static bool IsScalingMeaningful(double rawMin, double rawMax, double euMin, double euMax)
+	{
+		const double tolerance = 1e-9;
+		if (Math.Abs(rawMax - rawMin) < tolerance) return false;
+		return Math.Abs(rawMin - euMin) > tolerance || Math.Abs(rawMax - euMax) > tolerance;
+	}
+
+	/// <summary>
+	/// Membuat banyak tag dalam satu permintaan — jalur yang dipakai pemilih key di UI.
+	///
+	/// Tag yang gagal TIDAK menggagalkan seluruh batch: satu path yang sudah dipakai tag lain
+	/// tidak boleh membuang sebelas pilihan lain yang sah. Yang ditolak dilaporkan beserta
+	/// alasannya, supaya pengguna tahu tepat mana yang perlu diperbaiki.
+	/// </summary>
+	public async Task<ApiResponse<BulkTagResultDto>> CreateBulkAsync(CreateTagsBulkDto bulkDto)
+	{
+		var device = await _deviceRepository.GetByIdAsync(bulkDto.DeviceId);
+		if (device == null)
+		{
+			return ApiResponse<BulkTagResultDto>.Fail(404, "Perangkat tidak ditemukan");
+		}
+
+		var result = new BulkTagResultDto();
+		var seenAddresses = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+		foreach (var dto in bulkDto.Tags)
+		{
+			dto.DeviceId = bulkDto.DeviceId;
+
+			// Duplikat DI DALAM satu batch juga harus ditangkap: pengguna bisa memilih key yang
+			// sama dua kali lewat penanganan array, dan repositori belum melihat yang pertama
+			// sampai transaksinya selesai.
+			var key = (dto.SourceTopic ?? string.Empty) + "|" + dto.Address;
+			if (!seenAddresses.Add(key))
+			{
+				result.Skipped++;
+				result.Rejected.Add($"{dto.Name}: path {dto.Address} muncul dua kali dalam permintaan ini");
+				continue;
+			}
+
+			try
+			{
+				var created = await CreateAsync(dto);
+				result.Created++;
+				result.Tags.Add(created);
+			}
+			catch (Exception ex)
+			{
+				result.Skipped++;
+				result.Rejected.Add($"{dto.Name}: {ex.Message}");
+			}
+		}
+
+		var message = result.Skipped == 0
+			? $"{result.Created} tag berhasil dibuat"
+			: $"{result.Created} tag dibuat, {result.Skipped} dilewati";
+
+		return result.Created == 0 && result.Skipped > 0
+			? ApiResponse<BulkTagResultDto>.FailWithData(400, "Tidak ada tag yang bisa dibuat", result, result.Rejected)
+			: ApiResponse<BulkTagResultDto>.Success(result, message);
+	}
+
 	public async Task<TagResponseDto> CreateAsync(CreateTagDto createDto)
 	{
 		try
@@ -185,12 +278,26 @@ namespace Infrastructure.Services
 			EuMin = createDto.EuMin,
 			EuMax = createDto.EuMax,
 			OpcUaNodeId = createDto.OpcUaNodeId,
+			SourceTopic = createDto.SourceTopic,
+			ScanIntervalMs = createDto.ScanIntervalMs,
+			StoreMode = createDto.StoreMode,
+			DeadbandAbs = createDto.DeadbandAbs,
+			DeadbandPct = createDto.DeadbandPct,
+			MaxStoreGapMs = createDto.MaxStoreGapMs,
+			// IsScaled diturunkan, bukan diminta dari klien.
+			//
+			// Sebelumnya kolom ini TIDAK PERNAH di-set sama sekali, sehingga tetap false untuk
+			// setiap tag yang dibuat lewat API — rawMin/rawMax/euMin/euMax yang diisi operator
+			// tersimpan rapi tapi tidak pernah dipakai menghitung apa pun. Gejalanya: nilai di
+			// dasbor sama dengan nilai mentah PLC, dan tidak ada satu pun error.
+			IsScaled = IsScalingMeaningful(createDto.RawMin, createDto.RawMax, createDto.EuMin, createDto.EuMax),
 			CreatedAt = DateTime.UtcNow
 		};
 
 		var createdTag = await _tagRepository.CreateAsync(tagEntity);
 
 			_logger.LogInformation("Tag created: {TagName} (ID: {TagId}) on device {DeviceId}", createdTag.Name, createdTag.Id, createdTag.DeviceId);
+			NotifyAcquisition($"tag {createdTag.Id} dibuat");
 			return ToDto(createdTag);
 		}
 		catch (Exception ex)
@@ -213,7 +320,7 @@ namespace Infrastructure.Services
 				throw new KeyNotFoundException($"Tag {id} not found");
 
 			// If scaling parameters changed, validate them
-			if (updateDto.RawMin.HasValue || updateDto.RawMax.HasValue || 
+			if (updateDto.RawMin.HasValue || updateDto.RawMax.HasValue ||
 				updateDto.EuMin.HasValue || updateDto.EuMax.HasValue)
 			{
 				var validateDto = new CreateTagDto
@@ -265,6 +372,7 @@ namespace Infrastructure.Services
 		var updatedTag = await _tagRepository.UpdateAsync(tagToUpdate);
 
 		_logger.LogInformation("Tag updated: {TagName} (ID: {TagId})", updatedTag.Name, updatedTag.Id);
+		NotifyAcquisition($"tag {updatedTag.Id} diubah");
 		return ToDto(updatedTag);
 	}
 	catch (Exception ex)
@@ -283,7 +391,10 @@ namespace Infrastructure.Services
 			{
 				var deleted = await _tagRepository.DeleteAsync(id);
 				if (deleted)
+				{
 					_logger.LogInformation("Tag soft-deleted: {TagId}", id);
+					NotifyAcquisition($"tag {id} dihapus");
+				}
 				return deleted;
 			}
 			catch (Exception ex)
@@ -323,7 +434,7 @@ namespace Infrastructure.Services
 			}
 
 			// Linear interpolation formula
-			var euValue = ((clampedRaw - rawMin) * (euMax - euMin)) / 
+			var euValue = ((clampedRaw - rawMin) * (euMax - euMin)) /
 						  (rawMax - rawMin) + euMin;
 
 			return Math.Round(euValue, 2); // Round to 2 decimal places for precision
@@ -368,7 +479,7 @@ namespace Infrastructure.Services
 			}
 
 			// Reverse linear interpolation formula
-			var rawValue = ((euValue - euMin) * (rawMax - rawMin)) / 
+			var rawValue = ((euValue - euMin) * (rawMax - rawMin)) /
 						   (euMax - euMin) + rawMin;
 
 			// Clamp to valid raw range
@@ -391,7 +502,7 @@ namespace Infrastructure.Services
 		{
 			// For update operation, may have null values - skip optional validation
 			// For create operation, has default values - validate them
-			
+
 			if (createDto.RawMin >= createDto.RawMax)
 				return (false, "RawMin must be less than RawMax");
 

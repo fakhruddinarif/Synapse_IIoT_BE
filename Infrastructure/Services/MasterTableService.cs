@@ -4,6 +4,7 @@ using Core.Entities;
 using Core.Enums;
 using Core.Exceptions;
 using Core.Interface;
+using Core.Security;
 using Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
 using System.Text;
@@ -259,7 +260,7 @@ namespace Infrastructure.Services
             columnDefinitions.Add("DeletedAt DATETIME(6) NULL");
 
             var createTableSql = $@"
-                CREATE TABLE IF NOT EXISTS `{tableName}` (
+                CREATE TABLE IF NOT EXISTS `{SqlIdentifier.EnsureSafe(tableName, "tabel")}` (
                     {string.Join(",\n                    ", columnDefinitions)}
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;";
 
@@ -270,7 +271,7 @@ namespace Infrastructure.Services
         {
             var columnType = MapDataTypeToMySql(field.DataType);
             var alterTableSql = $@"
-                ALTER TABLE `{tableName}` 
+                ALTER TABLE `{SqlIdentifier.EnsureSafe(tableName, "tabel")}` 
                 ADD COLUMN `{field.Name}` {columnType} NULL;";
 
             await _dbContext.Database.ExecuteSqlRawAsync(alterTableSql);
@@ -279,7 +280,7 @@ namespace Infrastructure.Services
         private async Task DropColumnFromTableAsync(string tableName, string fieldName)
         {
             var alterTableSql = $@"
-                ALTER TABLE `{tableName}` 
+                ALTER TABLE `{SqlIdentifier.EnsureSafe(tableName, "tabel")}` 
                 DROP COLUMN `{fieldName}`;";
 
             await _dbContext.Database.ExecuteSqlRawAsync(alterTableSql);

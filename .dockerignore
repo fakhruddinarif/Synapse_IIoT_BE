@@ -1,0 +1,27 @@
+# Konteks build dijaga kecil dan bersih. Dua alasan yang sama pentingnya:
+# build jadi cepat karena tidak mengirim ratusan megabyte artefak, dan rahasia
+# lokal tidak ikut terbungkus ke dalam image.
+
+**/bin/
+**/obj/
+**/.vs/
+**/.vscode/
+.git/
+.gitignore
+
+# Rahasia lokal — tidak boleh ikut ke image. Konfigurasi runtime datang dari
+# variabel lingkungan (lihat docker-compose.yml), bukan dari berkas yang tersalin.
+.env
+.env.*
+Api/appsettings.Production.json
+**/*.user
+
+# Data runtime: WAL, catatan jeda, dan berkas unggahan milik volume, bukan image.
+acquisition-data/
+Api/acquisition-data/
+Api/wwwroot/uploads/
+
+# Dokumen dan berkas kerja
+*.md
+docker-compose*.yml
+Dockerfile

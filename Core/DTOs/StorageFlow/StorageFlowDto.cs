@@ -87,16 +87,11 @@ namespace Core.DTOs.StorageFlow
 
         /// <summary>
         /// JSONPath for HTTP/MQTT (e.g., "$.data.table")
-        /// Tag name/address for MODBUS/OPCUA
+        /// Tag-like source path for MODBUS/OPCUA
         /// </summary>
         [Required]
         [MaxLength(500)]
         public string SourcePath { get; set; } = string.Empty;
-
-        /// <summary>
-        /// Optional: Tag ID for MODBUS/OPCUA protocols
-        /// </summary>
-        public Guid? TagId { get; set; }
     }
 
     public class StorageFlowMappingDto
@@ -106,8 +101,6 @@ namespace Core.DTOs.StorageFlow
         public string FieldName { get; set; } = string.Empty;
         public string FieldDataType { get; set; } = string.Empty;
         public string SourcePath { get; set; } = string.Empty;
-        public Guid? TagId { get; set; }
-        public string? TagName { get; set; }
     }
 
     /// <summary>

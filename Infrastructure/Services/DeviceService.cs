@@ -15,7 +15,7 @@ namespace Infrastructure.Services
 		private static readonly JsonSerializerOptions _jsonOptions = new() { PropertyNameCaseInsensitive = true };
 
 		public DeviceService(
-			IDeviceRepository deviceRepository, 
+			IDeviceRepository deviceRepository,
 			IHttpClientFactory httpClientFactory,
 			IDeviceWorkerService deviceWorkerService)
 		{
@@ -58,7 +58,7 @@ namespace Infrastructure.Services
 			// Validate device name uniqueness
 			if (await _deviceRepository.NameExistsAsync(dto.Name))
 			{
-				return ApiResponse<DeviceResponseDto>.Fail(400, "Device name already exists", new { name = "Device name must be unique" });
+				return ApiResponse<DeviceResponseDto>.Fail(400, "Nama perangkat sudah dipakai", "Nama perangkat harus unik.");
 			}
 
 			// Validate and serialize connection config based on protocol
@@ -77,7 +77,7 @@ namespace Infrastructure.Services
 			}
 			catch (Exception ex)
 			{
-				return ApiResponse<DeviceResponseDto>.Fail(400, "Invalid connection configuration", new { config = ex.Message });
+				return ApiResponse<DeviceResponseDto>.Fail(400, "Konfigurasi koneksi tidak valid", ex.Message);
 			}
 
 			var device = new Device
@@ -112,7 +112,7 @@ namespace Infrastructure.Services
 			{
 				if (await _deviceRepository.NameExistsAsync(dto.Name, id))
 				{
-					return ApiResponse<DeviceResponseDto>.Fail(400, "Device name already exists", new { name = "Device name must be unique" });
+					return ApiResponse<DeviceResponseDto>.Fail(400, "Nama perangkat sudah dipakai", "Nama perangkat harus unik.");
 				}
 				device.Name = dto.Name;
 			}
@@ -151,7 +151,7 @@ namespace Infrastructure.Services
 				}
 				catch (Exception ex)
 				{
-					return ApiResponse<DeviceResponseDto>.Fail(400, "Invalid connection configuration", new { config = ex.Message });
+					return ApiResponse<DeviceResponseDto>.Fail(400, "Konfigurasi koneksi tidak valid", ex.Message);
 				}
 			}
 			else if (dto.ConnectionConfig != null)
@@ -171,7 +171,7 @@ namespace Infrastructure.Services
 				}
 				catch (Exception ex)
 				{
-					return ApiResponse<DeviceResponseDto>.Fail(400, "Invalid connection configuration", new { config = ex.Message });
+					return ApiResponse<DeviceResponseDto>.Fail(400, "Konfigurasi koneksi tidak valid", ex.Message);
 				}
 			}
 
@@ -281,7 +281,8 @@ namespace Infrastructure.Services
 					IsSuccess = false,
 					ErrorMessage = $"HTTP request failed: {ex.Message}"
 				};
-				return ApiResponse<TestHttpConnectionResponseDto>.Fail(400, "HTTP request failed", errorResult);
+				return ApiResponse<TestHttpConnectionResponseDto>.FailWithData(400, "Permintaan HTTP gagal", errorResult,
+					new[] { errorResult.ErrorMessage ?? "Permintaan HTTP gagal." });
 			}
 			catch (TaskCanceledException)
 			{
@@ -292,7 +293,8 @@ namespace Infrastructure.Services
 					IsSuccess = false,
 					ErrorMessage = "Request timeout (30 seconds exceeded)"
 				};
-				return ApiResponse<TestHttpConnectionResponseDto>.Fail(408, "Request timeout", errorResult);
+				return ApiResponse<TestHttpConnectionResponseDto>.FailWithData(408, "Waktu tunggu habis", errorResult,
+					new[] { errorResult.ErrorMessage ?? "Waktu tunggu habis." });
 			}
 			catch (Exception ex)
 			{
@@ -303,7 +305,8 @@ namespace Infrastructure.Services
 					IsSuccess = false,
 					ErrorMessage = ex.Message
 				};
-				return ApiResponse<TestHttpConnectionResponseDto>.Fail(500, "An error occurred while testing HTTP connection", errorResult);
+				return ApiResponse<TestHttpConnectionResponseDto>.FailWithData(500, "Terjadi kesalahan saat menguji koneksi HTTP", errorResult,
+					new[] { errorResult.ErrorMessage ?? "Kesalahan tidak diketahui." });
 			}
 		}
 

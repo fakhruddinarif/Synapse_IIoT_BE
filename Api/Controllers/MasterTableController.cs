@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Authorization;
+using Core.DTOs;
 using Core.Interface;
 using Core.DTOs.MasterTable;
 
@@ -31,7 +32,7 @@ namespace Api.Controllers
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new { status = 500, message = "An error occurred while retrieving master tables", error = ex.Message });
+                return StatusCode(500, ApiResponse<object>.Fail(500, "Gagal mengambil daftar tabel"));
             }
         }
 
@@ -49,7 +50,7 @@ namespace Api.Controllers
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new { status = 500, message = "An error occurred while retrieving master table", error = ex.Message });
+                return StatusCode(500, ApiResponse<object>.Fail(500, "Gagal mengambil data tabel"));
             }
         }
 
@@ -72,7 +73,7 @@ namespace Api.Controllers
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new { status = 500, message = "An error occurred while creating master table", error = ex.Message });
+                return StatusCode(500, ApiResponse<object>.Fail(500, "Gagal membuat tabel"));
             }
         }
 
@@ -95,7 +96,7 @@ namespace Api.Controllers
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new { status = 500, message = "An error occurred while updating master table", error = ex.Message });
+                return StatusCode(500, ApiResponse<object>.Fail(500, "Gagal memperbarui tabel"));
             }
         }
 
@@ -113,7 +114,7 @@ namespace Api.Controllers
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new { status = 500, message = "An error occurred while deleting master table", error = ex.Message });
+                return StatusCode(500, ApiResponse<object>.Fail(500, "Gagal menghapus tabel"));
             }
         }
 
@@ -133,7 +134,7 @@ namespace Api.Controllers
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new { status = 500, message = "An error occurred while retrieving fields", error = ex.Message });
+                return StatusCode(500, ApiResponse<object>.Fail(500, "Gagal mengambil daftar kolom"));
             }
         }
 
@@ -156,7 +157,7 @@ namespace Api.Controllers
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new { status = 500, message = "An error occurred while creating field", error = ex.Message });
+                return StatusCode(500, ApiResponse<object>.Fail(500, "Gagal membuat kolom"));
             }
         }
 
@@ -179,7 +180,7 @@ namespace Api.Controllers
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new { status = 500, message = "An error occurred while updating field", error = ex.Message });
+                return StatusCode(500, ApiResponse<object>.Fail(500, "Gagal memperbarui kolom"));
             }
         }
 
@@ -197,7 +198,7 @@ namespace Api.Controllers
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new { status = 500, message = "An error occurred while deleting field", error = ex.Message });
+                return StatusCode(500, ApiResponse<object>.Fail(500, "Gagal menghapus kolom"));
             }
         }
     }

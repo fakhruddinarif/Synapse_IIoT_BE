@@ -4,12 +4,16 @@
     <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <!-- Dibutuhkan agar `dotnet user-secrets` punya tempat menyimpan rahasia lokal
+         (di luar repositori) — lihat references/security.md, temuan T1. Rahasia
+         database dan JWT untuk pengembangan tidak lagi ditulis di appsettings.*.json. -->
+    <UserSecretsId>dfc4194c-de8c-4e94-9b90-dd825dc77273</UserSecretsId>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.3" />
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.3" />
-    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.3">
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.1">
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
     </PackageReference>

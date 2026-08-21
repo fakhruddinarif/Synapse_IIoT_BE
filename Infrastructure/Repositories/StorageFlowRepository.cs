@@ -31,9 +31,7 @@ namespace Infrastructure.Repositories
                     .Include(sf => sf.StorageFlowDevices)
                         .ThenInclude(sfd => sfd.Device)
                     .Include(sf => sf.StorageFlowMappings)
-                        .ThenInclude(sfm => sfm.MasterTableField)
-                    .Include(sf => sf.StorageFlowMappings)
-                        .ThenInclude(sfm => sfm.Tag);
+                        .ThenInclude(sfm => sfm.MasterTableField);
             }
 
             return await query.FirstOrDefaultAsync();
@@ -56,9 +54,7 @@ namespace Infrastructure.Repositories
                     .Include(sf => sf.StorageFlowDevices)
                         .ThenInclude(sfd => sfd.Device)
                     .Include(sf => sf.StorageFlowMappings)
-                        .ThenInclude(sfm => sfm.MasterTableField)
-                    .Include(sf => sf.StorageFlowMappings)
-                        .ThenInclude(sfm => sfm.Tag);
+                        .ThenInclude(sfm => sfm.MasterTableField);
             }
 
             return await query.OrderByDescending(sf => sf.CreatedAt).ToListAsync();
@@ -74,9 +70,6 @@ namespace Infrastructure.Repositories
                     .ThenInclude(sfd => sfd.Device)
                 .Include(sf => sf.StorageFlowMappings)
                     .ThenInclude(sfm => sfm.MasterTableField)
-                .Include(sf => sf.StorageFlowMappings)
-                    .ThenInclude(sfm => sfm.Tag)
-                        .ThenInclude(t => t!.Device)
                 .ToListAsync();
         }
 

@@ -34,14 +34,6 @@ namespace Core.Entities
         [MaxLength(500)]
         public string SourcePath { get; set; } = string.Empty;
 
-        /// <summary>
-        /// Optional: Reference to Tag entity for MODBUS/OPCUA protocols
-        /// </summary>
-        public Guid? TagId { get; set; }
-
-        [ForeignKey("TagId")]
-        public Tag? Tag { get; set; }
-
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
         public DateTime? UpdatedAt { get; set; }
     }

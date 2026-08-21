@@ -19,6 +19,59 @@ namespace Infrastructure.Migrations
                 .HasAnnotation("ProductVersion", "10.0.3")
                 .HasAnnotation("Relational:MaxIdentifierLength", 64);
 
+            modelBuilder.Entity("Core.Entities.AuditLog", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("char(36)");
+
+                    b.Property<string>("Action")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("varchar(50)");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<Guid?>("EntityId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<string>("EntityType")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("varchar(50)");
+
+                    b.Property<string>("ErrorMessage")
+                        .HasMaxLength(500)
+                        .HasColumnType("varchar(500)");
+
+                    b.Property<string>("IpAddress")
+                        .HasMaxLength(45)
+                        .HasColumnType("varchar(45)");
+
+                    b.Property<string>("NewValues")
+                        .HasColumnType("json");
+
+                    b.Property<string>("OldValues")
+                        .HasColumnType("json");
+
+                    b.Property<int>("Status")
+                        .HasColumnType("int");
+
+                    b.Property<string>("UserAgent")
+                        .HasMaxLength(500)
+                        .HasColumnType("varchar(500)");
+
+                    b.Property<Guid?>("UserId")
+                        .HasColumnType("char(36)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("UserId");
+
+                    b.ToTable("AuditLogs");
+                });
+
             modelBuilder.Entity("Core.Entities.Device", b =>
                 {
                     b.Property<Guid>("Id")
@@ -292,9 +345,6 @@ namespace Infrastructure.Migrations
                     b.Property<Guid>("StorageFlowId")
                         .HasColumnType("char(36)");
 
-                    b.Property<Guid?>("TagId")
-                        .HasColumnType("char(36)");
-
                     b.Property<DateTime?>("UpdatedAt")
                         .HasColumnType("datetime(6)");
 
@@ -303,8 +353,6 @@ namespace Infrastructure.Migrations
                     b.HasIndex("MasterTableFieldId");
 
                     b.HasIndex("StorageFlowId");
-
-                    b.HasIndex("TagId");
 
                     b.ToTable("StorageFlowMappings");
                 });
@@ -329,11 +377,23 @@ namespace Infrastructure.Migrations
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("datetime(6)");
 
+                    b.Property<double?>("CurrentEngValue")
+                        .HasColumnType("double");
+
+                    b.Property<double?>("CurrentRawValue")
+                        .HasColumnType("double");
+
                     b.Property<string>("DataType")
                         .IsRequired()
                         .ValueGeneratedOnAdd()
                         .HasColumnType("varchar(50)")
                         .HasDefaultValue("FLOAT");
+
+                    b.Property<double?>("DeadbandAbs")
+                        .HasColumnType("double");
+
+                    b.Property<double?>("DeadbandPct")
+                        .HasColumnType("double");
 
                     b.Property<DateTime?>("DeletedAt")
                         .HasColumnType("datetime(6)");
@@ -347,10 +407,16 @@ namespace Infrastructure.Migrations
                     b.Property<double?>("EuMin")
                         .HasColumnType("double");
 
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("tinyint(1)");
+
                     b.Property<bool>("IsScaled")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("tinyint(1)")
                         .HasDefaultValue(false);
+
+                    b.Property<int>("MaxStoreGapMs")
+                        .HasColumnType("int");
 
                     b.Property<string>("Name")
                         .IsRequired()
@@ -367,6 +433,16 @@ namespace Infrastructure.Migrations
                     b.Property<double?>("RawMin")
                         .HasColumnType("double");
 
+                    b.Property<int>("ScanIntervalMs")
+                        .HasColumnType("int");
+
+                    b.Property<string>("SourceTopic")
+                        .HasMaxLength(500)
+                        .HasColumnType("varchar(500)");
+
+                    b.Property<int>("StoreMode")
+                        .HasColumnType("int");
+
                     b.Property<string>("Unit")
                         .IsRequired()
                         .HasMaxLength(20)
@@ -375,11 +451,62 @@ namespace Infrastructure.Migrations
                     b.Property<DateTime?>("UpdatedAt")
                         .HasColumnType("datetime(6)");
 
+                    b.Property<DateTime?>("ValueUpdatedAt")
+                        .HasColumnType("datetime(6)");
+
                     b.HasKey("Id");
 
                     b.HasIndex("DeviceId");
 
                     b.ToTable("Tags");
+                });
+
+            modelBuilder.Entity("Core.Entities.TagHistory", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    b.Property<bool?>("BoolValue")
+                        .HasColumnType("tinyint(1)");
+
+                    b.Property<Guid>("DeviceId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<DateTime>("GatewayTs")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<string>("Note")
+                        .HasMaxLength(255)
+                        .HasColumnType("varchar(255)");
+
+                    b.Property<double?>("NumericValue")
+                        .HasColumnType("double");
+
+                    b.Property<byte>("Quality")
+                        .HasColumnType("tinyint unsigned");
+
+                    b.Property<double?>("RawValue")
+                        .HasColumnType("double");
+
+                    b.Property<DateTime>("SourceTs")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<Guid>("TagId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<string>("TextValue")
+                        .HasMaxLength(500)
+                        .HasColumnType("varchar(500)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("DeviceId", "SourceTs");
+
+                    b.HasIndex("TagId", "SourceTs")
+                        .IsUnique();
+
+                    b.ToTable("TagHistories");
                 });
 
             modelBuilder.Entity("Core.Entities.User", b =>
@@ -416,6 +543,15 @@ namespace Infrastructure.Migrations
                     b.HasKey("Id");
 
                     b.ToTable("Users");
+                });
+
+            modelBuilder.Entity("Core.Entities.AuditLog", b =>
+                {
+                    b.HasOne("Core.Entities.User", "User")
+                        .WithMany()
+                        .HasForeignKey("UserId");
+
+                    b.Navigation("User");
                 });
 
             modelBuilder.Entity("Core.Entities.MasterTableFields", b =>
@@ -473,16 +609,9 @@ namespace Infrastructure.Migrations
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
-                    b.HasOne("Core.Entities.Tag", "Tag")
-                        .WithMany()
-                        .HasForeignKey("TagId")
-                        .OnDelete(DeleteBehavior.SetNull);
-
                     b.Navigation("MasterTableField");
 
                     b.Navigation("StorageFlow");
-
-                    b.Navigation("Tag");
                 });
 
             modelBuilder.Entity("Core.Entities.Tag", b =>
@@ -494,6 +623,15 @@ namespace Infrastructure.Migrations
                         .IsRequired();
 
                     b.Navigation("Device");
+                });
+
+            modelBuilder.Entity("Core.Entities.TagHistory", b =>
+                {
+                    b.HasOne("Core.Entities.Tag", null)
+                        .WithMany()
+                        .HasForeignKey("TagId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("Core.Entities.MasterTable", b =>

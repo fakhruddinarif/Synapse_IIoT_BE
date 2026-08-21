@@ -1,4 +1,5 @@
-using Core.DTOs.Tag;
+﻿using Core.DTOs.Tag;
+using Core.DTOs;
 using Core.Interface;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -11,12 +12,39 @@ namespace Api.Controllers
 	public class TagController : ControllerBase
 	{
 		private readonly ITagService _tagService;
+		private readonly ITagHistoryService _historyService;
 		private readonly ILogger<TagController> _logger;
 
-		public TagController(ITagService tagService, ILogger<TagController> logger)
+		public TagController(
+			ITagService tagService,
+			ITagHistoryService historyService,
+			ILogger<TagController> logger)
 		{
 			_tagService = tagService;
+			_historyService = historyService;
 			_logger = logger;
+		}
+
+		/// <summary>
+		/// Nilai sekarang seluruh tag, dari RTDB di memori.
+		/// GET /api/tags/current?deviceId=xxx
+		///
+		/// Dipakai dasbor saat pertama dibuka: tanpa ini, layar kosong sampai frame realtime
+		/// berikutnya datang — yang untuk tag berinterval satu menit berarti kosong satu menit.
+		/// </summary>
+		[HttpGet("current")]
+		public IActionResult GetCurrentValues([FromQuery] Guid? deviceId)
+			=> Ok(_historyService.GetCurrentValues(deviceId));
+
+		/// <summary>
+		/// Riwayat satu tag dari historian.
+		/// GET /api/tags/{id}/history?from=&to=&limit=2000&goodOnly=false
+		/// </summary>
+		[HttpGet("{id}/history")]
+		public async Task<IActionResult> GetHistory(Guid id, [FromQuery] TagHistoryQueryDto query)
+		{
+			var response = await _historyService.GetAsync(id, query);
+			return StatusCode(response.Status, response);
 		}
 
 		/// <summary>
@@ -37,12 +65,7 @@ namespace Api.Controllers
 			catch (Exception ex)
 			{
 				_logger.LogError(ex, "Error retrieving tags");
-				return StatusCode(500, new
-				{
-					status = 500,
-					message = "Error retrieving tags",
-					error = ex.Message
-				});
+				return StatusCode(500, ApiResponse<object>.Fail(500, "Error retrieving tags"));
 			}
 		}
 
@@ -50,6 +73,28 @@ namespace Api.Controllers
 		/// Get tag by ID with current values
 		/// GET /api/tags/{id}
 		/// </summary>
+		/// <summary>
+		/// Membuat banyak tag sekaligus — dipakai pemilih key setelah pengguna memilih key mana
+		/// yang mau dijadikan tag.
+		/// POST /api/tags/bulk
+		/// </summary>
+		[HttpPost("bulk")]
+		[Authorize(Roles = "ADMIN,ENGINEER")]
+		public async Task<IActionResult> CreateBulk([FromBody] CreateTagsBulkDto dto)
+		{
+			if (!ModelState.IsValid)
+			{
+				var errors = ModelState.Values
+					.SelectMany(v => v.Errors.Select(e => e.ErrorMessage))
+					.Where(m => !string.IsNullOrWhiteSpace(m))
+					.ToList();
+				return BadRequest(ApiResponse<object>.Fail(400, "Input tidak valid", errors));
+			}
+
+			var result = await _tagService.CreateBulkAsync(dto);
+			return StatusCode(result.Status, result);
+		}
+
 		[HttpGet("{id}")]
 		[ProducesResponseType(StatusCodes.Status200OK)]
 		[ProducesResponseType(StatusCodes.Status404NotFound)]
@@ -61,19 +106,14 @@ namespace Api.Controllers
 				_logger.LogInformation("Fetching tag: {TagId}", id);
 				var result = await _tagService.GetByIdAsync(id);
 				if (result == null)
-					return NotFound(new { status = 404, message = "Tag not found" });
-				
+					return NotFound(ApiResponse<object>.Fail(404, "Tag tidak ditemukan"));
+
 				return Ok(result);
 			}
 			catch (Exception ex)
 			{
 				_logger.LogError(ex, "Error retrieving tag {TagId}", id);
-				return StatusCode(500, new
-				{
-					status = 500,
-					message = "Error retrieving tag",
-					error = ex.Message
-				});
+				return StatusCode(500, ApiResponse<object>.Fail(500, "Error retrieving tag"));
 			}
 		}
 
@@ -96,12 +136,7 @@ namespace Api.Controllers
 			catch (Exception ex)
 			{
 				_logger.LogError(ex, "Error retrieving tags for device {DeviceId}", deviceId);
-				return StatusCode(500, new
-				{
-					status = 500,
-					message = "Error retrieving tag",
-					error = ex.Message
-				});
+				return StatusCode(500, ApiResponse<object>.Fail(500, "Error retrieving tag"));
 			}
 		}
 
@@ -127,12 +162,7 @@ namespace Api.Controllers
 			catch (Exception ex)
 			{
 				_logger.LogError(ex, "Error creating tag");
-				return StatusCode(500, new
-				{
-					status = 500,
-					message = "Error creating tag",
-					error = ex.Message
-				});
+				return StatusCode(500, ApiResponse<object>.Fail(500, "Error creating tag"));
 			}
 		}
 
@@ -158,12 +188,7 @@ namespace Api.Controllers
 			catch (Exception ex)
 			{
 				_logger.LogError(ex, "Error updating tag {TagId}", id);
-				return StatusCode(500, new
-				{
-					status = 500,
-					message = "Error updating tag",
-					error = ex.Message
-				});
+				return StatusCode(500, ApiResponse<object>.Fail(500, "Error updating tag"));
 			}
 		}
 
@@ -182,19 +207,14 @@ namespace Api.Controllers
 				_logger.LogInformation("Deleting tag: {TagId}", id);
 				var result = await _tagService.DeleteAsync(id);
 				if (!result)
-					return NotFound(new { status = 404, message = "Tag not found" });
-				
-				return Ok(new { status = 200, message = "Tag deleted successfully" });
+					return NotFound(ApiResponse<object>.Fail(404, "Tag tidak ditemukan"));
+
+				return Ok(ApiResponse<object>.SuccessWithStatus(200, null, "Tag berhasil dihapus"));
 			}
 			catch (Exception ex)
 			{
 				_logger.LogError(ex, "Error deleting tag {TagId}", id);
-				return StatusCode(500, new
-				{
-					status = 500,
-					message = "Error deleting tag",
-					error = ex.Message
-				});
+				return StatusCode(500, ApiResponse<object>.Fail(500, "Error deleting tag"));
 			}
 		}
 	}

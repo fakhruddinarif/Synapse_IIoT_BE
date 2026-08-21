@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Security.Claims;
 using Core.Entities;
 using Core.Interface;
@@ -5,7 +6,26 @@ using Core.Interface;
 namespace Api.Middlewares
 {
 	/// <summary>
-	/// Middleware for capturing and logging all HTTP requests for compliance and security audit trails.
+	/// Mencatat setiap permintaan untuk jejak audit.
+	///
+	/// Dua hal disengaja dan penting:
+	///
+	/// <b>1. Body respons TIDAK dicatat.</b> Versi sebelumnya menukar
+	/// <c>Response.Body</c> dengan <c>MemoryStream</c>, membaca isinya, lalu menyimpan 500
+	/// karakter pertama ke kolom audit. Akibatnya jejak audit ikut menyimpan data yang
+	/// dikembalikan endpoint — termasuk profil pengguna, daftar user, dan isi payload
+	/// perangkat — sehingga tabel audit menjadi salinan kedua data sensitif dengan kendali
+	/// akses yang lebih longgar. Selain itu penyanggaan tersebut memaksa seluruh respons
+	/// masuk memori dan mematikan streaming.
+	///
+	/// Yang dicatat adalah metadata: siapa, apa, kapan, dari mana, hasilnya apa, dan berapa
+	/// lama. Itulah yang dibutuhkan saat menelusuri insiden.
+	///
+	/// <b>2. <c>_next</c> dipanggil TEPAT sekali.</b> Versi sebelumnya membungkus pemanggilan
+	/// <c>_next</c> dan pencatatan audit dalam satu <c>try</c>, lalu memanggil <c>_next</c>
+	/// lagi di <c>catch</c>. Kegagalan pencatatan audit — misalnya database sedang restart —
+	/// karena itu menjalankan ulang seluruh pipeline, dan satu <c>POST</c> bisa tereksekusi
+	/// dua kali.
 	/// </summary>
 	public class AuditLoggingMiddleware
 	{
@@ -13,17 +33,15 @@ namespace Api.Middlewares
 		private readonly ILogger<AuditLoggingMiddleware> _logger;
 		private readonly IServiceProvider _serviceProvider;
 
-		// Endpoints to exclude from audit logging (health checks, metrics, etc.)
-		private static readonly HashSet<string> ExcludedPaths = new()
+		private static readonly string[] ExcludedPrefixes =
 		{
-			"/health",
-			"/metrics",
-			"/swagger",
-			"/openapi",
-			"/signalr" // Don't audit WebSocket connections
+			"/health", "/metrics", "/swagger", "/openapi", "/signalr"
 		};
 
-		public AuditLoggingMiddleware(RequestDelegate next, ILogger<AuditLoggingMiddleware> logger, IServiceProvider serviceProvider)
+		public AuditLoggingMiddleware(
+			RequestDelegate next,
+			ILogger<AuditLoggingMiddleware> logger,
+			IServiceProvider serviceProvider)
 		{
 			_next = next;
 			_logger = logger;
@@ -32,148 +50,146 @@ namespace Api.Middlewares
 
 		public async Task InvokeAsync(HttpContext context)
 		{
-			// Check if this path should be excluded from audit logging
-			if (ShouldExcludePath(context.Request.Path))
+			if (ShouldExclude(context.Request.Path))
 			{
 				await _next(context);
 				return;
 			}
 
+			var stopwatch = Stopwatch.StartNew();
+
+			// Di luar try: pipeline harus jalan tepat sekali, apa pun yang terjadi pada
+			// pencatatan audit sesudahnya.
+			await _next(context);
+
+			stopwatch.Stop();
+
 			try
 			{
-				// Make response body readable by rewinding stream
-				var originalBodyStream = context.Response.Body;
-				using var memoryStream = new MemoryStream();
-				context.Response.Body = memoryStream;
-
-				// Extract user information from JWT claims
-				var userId = GetUserIdFromClaims(context.User);
-
-				// Call the next middleware
-				await _next(context);
-
-				// Capture response body
-				memoryStream.Position = 0;
-				string responseBody = await new StreamReader(memoryStream).ReadToEndAsync();
-
-				// Reset response stream position and copy to original response
-				memoryStream.Position = 0;
-				await memoryStream.CopyToAsync(originalBodyStream);
-				context.Response.Body = originalBodyStream;
-
-				// Determine action type from HTTP method
-				string action = DetermineAction(context.Request.Method);
-				string resourceType = ExtractResourceType(context.Request.Path);
-
-				// Create audit log entry with captured information
-				var auditLog = new AuditLog
-				{
-					UserId = userId,
-					Action = action,
-					EntityType = resourceType,
-					EntityId = ExtractResourceId(context.Request.Path),
-					OldValues = null,
-					NewValues = responseBody.Length > 500 ? responseBody.Substring(0, 500) : responseBody,
-					CreatedAt = DateTime.UtcNow
-				};
-
-				// Save audit log to database using the repository
-				using (var scope = _serviceProvider.CreateScope())
-				{
-					var auditLogRepository = scope.ServiceProvider.GetRequiredService<IAuditLogRepository>();
-					try
-					{
-						await auditLogRepository.CreateAsync(auditLog);
-					}
-					catch (Exception ex)
-					{
-						_logger.LogError(ex, "Failed to create audit log: {Exception}", ex.Message);
-					}
-				}
-
-				_logger.LogInformation(
-					"[{Method}] {Path} | StatusCode: {StatusCode}",
-					context.Request.Method, context.Request.Path, context.Response.StatusCode);
+				await RecordAsync(context, stopwatch.ElapsedMilliseconds);
 			}
 			catch (Exception ex)
 			{
-				_logger.LogError(ex, "Exception in AuditLoggingMiddleware: {Exception}", ex.Message);
-				await _next(context);
+				// Audit yang gagal tidak boleh menggagalkan permintaan yang sudah selesai
+				// dilayani — tapi harus terlihat di log, karena audit yang diam-diam mati
+				// berarti jejak yang hilang.
+				_logger.LogError(ex, "Gagal menulis jejak audit untuk {Method} {Path}",
+					context.Request.Method, context.Request.Path);
 			}
 		}
 
-		/// <summary>
-		/// Check if this path should be excluded from audit logging
-		/// </summary>
-		private static bool ShouldExcludePath(PathString path)
+		private async Task RecordAsync(HttpContext context, long elapsedMs)
 		{
-			var pathValue = path.Value ?? string.Empty;
-			return ExcludedPaths.Any(excluded => pathValue.StartsWith(excluded, StringComparison.OrdinalIgnoreCase));
-		}
+			var request = context.Request;
+			var statusCode = context.Response.StatusCode;
 
-		/// <summary>
-		/// Extract user ID from JWT claims
-		/// </summary>
-		private static Guid? GetUserIdFromClaims(ClaimsPrincipal user)
-		{
-			var userIdClaim = user.FindFirst(ClaimTypes.NameIdentifier) ?? user.FindFirst("sub");
-			if (userIdClaim != null && Guid.TryParse(userIdClaim.Value, out var userId))
-				return userId;
+			// Metode baca yang berhasil adalah mayoritas lalu lintas dasbor dan tidak
+			// mengubah apa pun; mencatatnya akan menenggelamkan kejadian yang penting.
+			// Yang tetap dicatat: seluruh perubahan data, dan setiap penolakan akses.
+			var isMutation = !HttpMethods.IsGet(request.Method) && !HttpMethods.IsHead(request.Method);
+			var isDenied = statusCode is 401 or 403 or 429;
 
-			return null;
-		}
+			if (!isMutation && !isDenied) return;
 
-		/// <summary>
-		/// Determine the audit action type based on HTTP method
-		/// </summary>
-		private static string DetermineAction(string method)
-		{
-			return method switch
+			var auditLog = new AuditLog
 			{
-				"GET" => "READ",
-				"POST" => "CREATE",
-				"PUT" => "UPDATE",
-				"PATCH" => "UPDATE",
-				"DELETE" => "DELETE",
-				_ => "UNKNOWN"
+				UserId = GetUserId(context.User),
+				Action = DetermineAction(request.Method),
+				EntityType = ExtractResourceType(request.Path),
+				EntityId = ExtractResourceId(request.Path),
+				OldValues = null,
+				// Ringkasan metadata, BUKAN isi respons.
+				NewValues =
+					$"{request.Method} {request.Path}{request.QueryString} -> {statusCode} " +
+					$"({elapsedMs} ms) ip={GetClientIp(context)} ua={Truncate(request.Headers.UserAgent.ToString(), 80)}",
+				CreatedAt = DateTime.UtcNow
 			};
+
+			using var scope = _serviceProvider.CreateScope();
+			var repository = scope.ServiceProvider.GetRequiredService<IAuditLogRepository>();
+			await repository.CreateAsync(auditLog);
+
+			if (isDenied)
+			{
+				_logger.LogWarning(
+					"Akses ditolak: [{Method}] {Path} -> {StatusCode} dari {Ip}",
+					request.Method, request.Path, statusCode, GetClientIp(context));
+			}
+		}
+
+		private static bool ShouldExclude(PathString path)
+		{
+			var value = path.Value ?? string.Empty;
+			return ExcludedPrefixes.Any(prefix => value.StartsWith(prefix, StringComparison.OrdinalIgnoreCase));
 		}
 
 		/// <summary>
-		/// Extract the resource type from the API path
+		/// IP klien. <c>X-Forwarded-For</c> hanya dipercaya bila memang ada reverse proxy di
+		/// depan; header itu bisa dipalsukan klien, jadi nilai koneksi didahulukan dan
+		/// header hanya dicatat sebagai tambahan.
 		/// </summary>
+		private static string GetClientIp(HttpContext context)
+		{
+			var remote = context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+			var forwarded = context.Request.Headers["X-Forwarded-For"].FirstOrDefault();
+			return string.IsNullOrWhiteSpace(forwarded) ? remote : $"{remote} (xff:{Truncate(forwarded, 45)})";
+		}
+
+		private static Guid? GetUserId(ClaimsPrincipal user)
+		{
+			var claim = user.FindFirst(ClaimTypes.NameIdentifier) ?? user.FindFirst("sub");
+			return claim is not null && Guid.TryParse(claim.Value, out var id) ? id : null;
+		}
+
+		private static string DetermineAction(string method) => method switch
+		{
+			"GET" => "READ",
+			"POST" => "CREATE",
+			"PUT" or "PATCH" => "UPDATE",
+			"DELETE" => "DELETE",
+			_ => "UNKNOWN"
+		};
+
 		private static string ExtractResourceType(PathString path)
 		{
-			var pathValue = path.Value?.ToLower() ?? string.Empty;
+			var value = path.Value?.ToLowerInvariant() ?? string.Empty;
 
-			if (pathValue.Contains("/api/users")) return "User";
-			if (pathValue.Contains("/api/devices")) return "Device";
-			if (pathValue.Contains("/api/tags")) return "Tag";
-			if (pathValue.Contains("/api/master-tables")) return "MasterTable";
-			if (pathValue.Contains("/api/storage-flows")) return "StorageFlow";
-			if (pathValue.Contains("/api/files")) return "File";
-			if (pathValue.Contains("/api/auth")) return "Auth";
+			if (value.Contains("/api/auth")) return "Auth";
+			if (value.Contains("/api/device")) return "Device";
+			if (value.Contains("/api/tags")) return "Tag";
+			if (value.Contains("/api/master-tables")) return "MasterTable";
+			if (value.Contains("/api/storage-flow")) return "StorageFlow";
+			if (value.Contains("/api/discovery")) return "Discovery";
+			if (value.Contains("/api/file")) return "File";
+			if (value.Contains("/api/users")) return "User";
 
 			return "Unknown";
 		}
 
-		/// <summary>
-		/// Extract the resource ID from the API path
-		/// </summary>
 		private static Guid ExtractResourceId(PathString path)
 		{
-			var pathValue = path.Value ?? string.Empty;
-			var segments = pathValue.Split('/');
+			var segments = (path.Value ?? string.Empty).Split('/', StringSplitOptions.RemoveEmptyEntries);
 
-			// Try to parse the last segment as a GUID
-			if (segments.Length > 0)
+			// Id bisa berada di tengah path (mis. /master-tables/{id}/fields/{fieldId}),
+			// jadi seluruh segmen diperiksa dari belakang, bukan hanya yang terakhir.
+			for (var i = segments.Length - 1; i >= 0; i--)
 			{
-				var lastSegment = segments[^1];
-				if (Guid.TryParse(lastSegment, out var guid))
-					return guid;
+				if (Guid.TryParse(segments[i], out var id)) return id;
 			}
 
 			return Guid.Empty;
 		}
+
+		private static string Truncate(string? value, int max)
+		{
+			if (string.IsNullOrEmpty(value)) return string.Empty;
+			return value.Length <= max ? value : value[..max];
+		}
+	}
+
+	public static class AuditLoggingMiddlewareExtensions
+	{
+		public static IApplicationBuilder UseAuditLogging(this IApplicationBuilder builder)
+			=> builder.UseMiddleware<AuditLoggingMiddleware>();
 	}
 }

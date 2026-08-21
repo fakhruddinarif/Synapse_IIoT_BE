@@ -1,5 +1,6 @@
 using Core.DTOs.StorageFlow;
 using Core.Exceptions;
+using Core.DTOs;
 using Core.Interface;
 using Microsoft.AspNetCore.Mvc;
 
@@ -26,11 +27,11 @@ namespace Api.Controllers
             try
             {
                 var flows = await _storageFlowService.GetAllAsync();
-                return Ok(new { status = 200, message = "Storage flows retrieved successfully", data = flows });
+                return Ok(ApiResponse<object>.SuccessWithStatus(200, flows, "Daftar storage flow berhasil diambil"));
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new { status = 500, message = "An error occurred", error = ex.Message });
+                return StatusCode(500, ApiResponse<object>.Fail(500, "Terjadi kesalahan saat memproses permintaan"));
             }
         }
 
@@ -44,15 +45,15 @@ namespace Api.Controllers
             try
             {
                 var flow = await _storageFlowService.GetByIdAsync(id);
-                return Ok(new { status = 200, message = "Storage flow retrieved successfully", data = flow });
+                return Ok(ApiResponse<object>.SuccessWithStatus(200, flow, "Storage flow berhasil diambil"));
             }
             catch (NotFoundException ex)
             {
-                return NotFound(new { status = 404, message = ex.Message });
+                return NotFound(ApiResponse<object>.Fail(404, ex.Message));
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new { status = 500, message = "An error occurred", error = ex.Message });
+                return StatusCode(500, ApiResponse<object>.Fail(500, "Terjadi kesalahan saat memproses permintaan"));
             }
         }
 
@@ -67,23 +68,25 @@ namespace Api.Controllers
             {
                 if (!ModelState.IsValid)
                 {
-                    return BadRequest(new { status = 400, message = "Validation failed", errors = ModelState });
+                    return BadRequest(ApiResponse<object>.Fail(400, "Input tidak valid",
+                    ModelState.Values.SelectMany(v => v.Errors.Select(e => e.ErrorMessage))
+                        .Where(m => !string.IsNullOrWhiteSpace(m)).ToList()));
                 }
 
                 var flow = await _storageFlowService.CreateAsync(dto);
-                return CreatedAtAction(nameof(GetById), new { id = flow.Id }, new { status = 201, message = "Storage flow created successfully", data = flow });
+                return CreatedAtAction(nameof(GetById), new { id = flow.Id }, ApiResponse<object>.SuccessWithStatus(201, flow, "Storage flow berhasil dibuat"));
             }
             catch (NotFoundException ex)
             {
-                return NotFound(new { status = 404, message = ex.Message });
+                return NotFound(ApiResponse<object>.Fail(404, ex.Message));
             }
             catch (BadRequestException ex)
             {
-                return BadRequest(new { status = 400, message = ex.Message });
+                return BadRequest(ApiResponse<object>.Fail(400, ex.Message));
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new { status = 500, message = "An error occurred", error = ex.Message });
+                return StatusCode(500, ApiResponse<object>.Fail(500, "Terjadi kesalahan saat memproses permintaan"));
             }
         }
 
@@ -98,23 +101,25 @@ namespace Api.Controllers
             {
                 if (!ModelState.IsValid)
                 {
-                    return BadRequest(new { status = 400, message = "Validation failed", errors = ModelState });
+                    return BadRequest(ApiResponse<object>.Fail(400, "Input tidak valid",
+                    ModelState.Values.SelectMany(v => v.Errors.Select(e => e.ErrorMessage))
+                        .Where(m => !string.IsNullOrWhiteSpace(m)).ToList()));
                 }
 
                 var flow = await _storageFlowService.UpdateAsync(id, dto);
-                return Ok(new { status = 200, message = "Storage flow updated successfully", data = flow });
+                return Ok(ApiResponse<object>.SuccessWithStatus(200, flow, "Storage flow berhasil diperbarui"));
             }
             catch (NotFoundException ex)
             {
-                return NotFound(new { status = 404, message = ex.Message });
+                return NotFound(ApiResponse<object>.Fail(404, ex.Message));
             }
             catch (BadRequestException ex)
             {
-                return BadRequest(new { status = 400, message = ex.Message });
+                return BadRequest(ApiResponse<object>.Fail(400, ex.Message));
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new { status = 500, message = "An error occurred", error = ex.Message });
+                return StatusCode(500, ApiResponse<object>.Fail(500, "Terjadi kesalahan saat memproses permintaan"));
             }
         }
 
@@ -131,14 +136,14 @@ namespace Api.Controllers
 
                 if (!result)
                 {
-                    return NotFound(new { status = 404, message = "Storage flow not found" });
+                    return NotFound(ApiResponse<object>.Fail(404, "Storage flow tidak ditemukan"));
                 }
 
-                return Ok(new { status = 200, message = "Storage flow deleted successfully" });
+                return Ok(ApiResponse<object>.SuccessWithStatus(200, null, "Storage flow berhasil dihapus"));
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new { status = 500, message = "An error occurred", error = ex.Message });
+                return StatusCode(500, ApiResponse<object>.Fail(500, "Terjadi kesalahan saat memproses permintaan"));
             }
         }
 
@@ -153,23 +158,25 @@ namespace Api.Controllers
             {
                 if (!ModelState.IsValid)
                 {
-                    return BadRequest(new { status = 400, message = "Validation failed", errors = ModelState });
+                    return BadRequest(ApiResponse<object>.Fail(400, "Input tidak valid",
+                    ModelState.Values.SelectMany(v => v.Errors.Select(e => e.ErrorMessage))
+                        .Where(m => !string.IsNullOrWhiteSpace(m)).ToList()));
                 }
 
                 var fields = await _storageFlowService.DiscoverFieldsAsync(dto.DeviceId);
-                return Ok(new { status = 200, message = "Fields discovered successfully", data = fields });
+                return Ok(ApiResponse<object>.SuccessWithStatus(200, fields, "Path berhasil dideteksi"));
             }
             catch (NotFoundException ex)
             {
-                return NotFound(new { status = 404, message = ex.Message });
+                return NotFound(ApiResponse<object>.Fail(404, ex.Message));
             }
             catch (BadRequestException ex)
             {
-                return BadRequest(new { status = 400, message = ex.Message });
+                return BadRequest(ApiResponse<object>.Fail(400, ex.Message));
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new { status = 500, message = "An error occurred", error = ex.Message });
+                return StatusCode(500, ApiResponse<object>.Fail(500, "Terjadi kesalahan saat memproses permintaan"));
             }
         }
     }

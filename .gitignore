@@ -67,3 +67,9 @@ appsettings.Production.json
 
 # Docker
 docker-compose.yml
+
+references/
+SKILL.md
+
+# Data akuisisi runtime (WAL, offset, catatan jeda)
+acquisition-data/
